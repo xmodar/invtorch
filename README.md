@@ -4,11 +4,11 @@ This module extends the functionality of `torch.utils.checkpoint.checkpoint` to 
 
 ## Installation
 
-InvTorch has minimal dependencies. It only requires PyTorch version `1.10.0` or later.
+[InvTorch](https://github.com/xmodar/invtorch) has minimal dependencies. It only requires PyTorch version `1.10.0` or later.
 
 ```bash
 conda install pytorch==1.10.0 torchvision torchaudio cudatoolkit=11.3 -c pytorch
-pip install git+https://github.com/xmodar/invtorch
+pip install invtorch
 ```
 
 ## Basic Usage
