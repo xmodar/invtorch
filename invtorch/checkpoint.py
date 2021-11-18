@@ -1,11 +1,21 @@
-"""InvTorch: Improved Checkpoint"""
+"""InvTorch: Improved Checkpoint https://github.com/xmodar/invtorch"""
 import torch
 from torch.utils.checkpoint import checkpoint as _checkpoint
+
+from .utils import pack, requires_grad, get_tensor_id_set
 
 __all__ = ['checkpoint']
 
 
-def checkpoint(function, *inputs, seed=True, strict=False, enabled=True):
+def checkpoint(
+        function,
+        *inputs,
+        seed=True,
+        strict=False,
+        enabled=True,
+        inverse=None,
+        keep=(),
+):
     """Same as `torch.utils.checkpoint.checkpoint` with extra functionalities
 
     The original checkpoint needs at least one input with `requires_grad` set
@@ -14,7 +24,7 @@ def checkpoint(function, *inputs, seed=True, strict=False, enabled=True):
     and PyTorch will raise a UserWarning. The checkpoint will be disabled and
     the code will run in `torch.no_grad()` mode.
 
-    In addition, by default all output tensors will have `requires_grad` set
+    Moreover, by default all output tensors will have `requires_grad` set
     to `True` even if they shouldn't. This is because, in the forward pass,
     the `function` will be called in `no_grad` mode and it is difficult to
     cheaply keep track of which output will require gradient beforehand.
@@ -31,44 +41,71 @@ def checkpoint(function, *inputs, seed=True, strict=False, enabled=True):
             we cannot automatically track this information. Here is an example:
             ```python
             def function(x, y, strict=False):
-                z = x * y
+                z = x + y
                 if strict:
                     z.requires_grad = x.requires_grad or y.requires_grad
-                return z
+                    # no need to set for y as it is already set
+                return z, y
            ```
            Debug your code carefully and try to cover all the cases. Don't
            forget to account for the used parameters that requires_grad.
 
     Args:
         function: this is any forward function with positional arguments
-        *args: input arguments tuple to be passed to `function`
+        *inputs: input arguments tuple to be passed to `function`
         seed: same as preserve_rng_state; preserves the random number generator
         strict: `requires_grad` for outputs is set manually in `function`
         enabled: disables checkpointing if set to False
+        inverse: inverse of `function` to deallocate the inputs as well
+        keep: set of input tensors to keep in memory during inverse mode
 
     Returns:
-        Outputs of `function(*args)` with requires_grad=True for all tensors
+        Outputs of `function(*inputs)` with checkpointing if required
     """
     if not enabled or not torch.is_grad_enabled():  # no checkpointing
         return function(*inputs)
-    kwargs = dict(preserve_rng_state=seed)
+
+    # find out which mode to run? strict inverse, strict, or nonstrict
+    strict = strict or inverse is not None  # inverse is always strict
+
     if not strict:  # use torch.utils.checkpoint.checkpoint
-        return _checkpoint(function, *inputs, **kwargs)
+        return _checkpoint(function, *inputs, preserve_rng_state=seed)
 
-    def _function(_, *args):
-        outputs = function(*args, strict=not torch.is_grad_enabled())
-        single = torch.is_tensor(outputs)  # return a single tensor or a tuple
-        if single:
-            outputs = (outputs, )
-        # get which output arguments were set manually to require gradients
-        grads = [torch.is_tensor(x) and x.requires_grad for x in outputs]
-        return (single, grads, *outputs)
+    def _function(_, *inputs):
+        strict = not torch.is_grad_enabled()
+        outputs = function(*inputs, strict=strict)
+        current = map(requires_grad, pack(outputs))
+        if strict:  # get manually set requires_grad for output tensors
+            grads.extend(current)
+        else:  # and check them against automatically set requires_grad
+            bad = {i for i, (g, c) in enumerate(zip(grads, current)) if g != c}
+            if bad:
+                expected = [i in bad != g for i, g in enumerate(grads)]
+                msg = ('manually set requires_grad for output tensors in '
+                       'strict mode mismatched automatically set values in '
+                       'the backward pass. Please, debug your implementation '
+                       'carfully and try to cover all the cases. Keep in mind '
+                       'the paramters of any model you call in `function`.'
+                       f'\nExpected: {expected}\nReceived: {grads}')
+                raise RuntimeError(msg)
+        return outputs
 
+    grads = []  # to be filled by `_function` with requires_grad of outputs
     nonce = torch.tensor((), requires_grad=True)  # ensures differentiability
-    single, grads, *outputs = _checkpoint(_function, nonce, *inputs, **kwargs)
+    outputs = _checkpoint(_function, nonce, *inputs, preserve_rng_state=seed)
 
-    for requires_grad, argument in zip(grads, outputs):
-        if torch.is_tensor(argument) and not requires_grad:
-            argument.detach_()
+    for grad, argument in zip(grads, pack(outputs)):
+        if torch.is_tensor(argument) and not grad:
+            argument.detach_()  # detach tensors that don't require gradients
+    if not any(grads):  # apparently, `function` was not differentiable
+        return outputs
 
-    return outputs[0] if single else outputs
+    if inverse is not None:  # see if we really need inverse
+        keep = get_tensor_id_set(*keep, *pack(outputs))
+        seep = get_tensor_id_set(*inputs) - keep  # tensors to marshal
+        if not seep:  # if we need to keep all input tensors
+            inverse = None  # then, ignore the inverse function
+    if inverse is None:
+        return outputs
+
+    raise NotImplementedError('`inverse` is not currently supported')
