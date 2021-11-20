@@ -3,17 +3,31 @@ import functools
 
 import torch
 
+__all__ = ['requires_grad', 'get_tensor_id', 'pack']
+
+_any, _all = any, all
+
+
+def requires_grad(inputs=None, *, any=None, all=None):
+    """Check if the inputs is a tensor that requires_grad"""
+    # pylint: disable=redefined-builtin
+    if any is not None or all is not None:
+        any = any is None or _any(map(requires_grad, any))
+        all = all is None or _all(map(requires_grad, all))
+        requires = any and all
+        if inputs is not None:
+            inputs.requires_grad_(requires)
+        return requires
+    else:
+        assert inputs is not None, 'You have to pass inputs'
+    return torch.is_tensor(inputs) and inputs.requires_grad
+
 
 def pack(inputs, is_tensor=False):
     """Pack the inputs into tuple if they were a single tensor"""
     single = torch.is_tensor(inputs)
     outputs = (inputs, ) if single else inputs
     return (outputs, single) if is_tensor else outputs
-
-
-def requires_grad(inputs):
-    """Check if the inputs is a tensor that requires_grad"""
-    return torch.is_tensor(inputs) and inputs.requires_grad
 
 
 def get_tensor_id(inputs, by_storage=True):
