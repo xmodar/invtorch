@@ -29,6 +29,7 @@ def checkpoint(
     to `True` even if they shouldn't. This is because, in the forward pass,
     the `function` will be called in `no_grad` mode and it is difficult to
     cheaply keep track of which output will require gradient beforehand.
+    Refer to https://pytorch.org/docs/1.10.0/checkpoint.html for more details.
 
     Instead, this function has two new flags; `strict` and `enabled`.
     Setting `enabled` to `False`, will disable all checkpointing logic. Else,
@@ -51,6 +52,48 @@ def checkpoint(
            Debug your code carefully and try to cover all the cases. Don't
            forget to account for any used parameters that requires_grad.
 
+    In addition, this function allows a more extreme version of checkpointing.
+    If `function` was invertible with respect to its input tensors, then we can
+    deallocate them as well and recover them using `inverse`. It should be a
+    function that takes all output arguments of `function` and returns all the
+    computed inputs. In general, `inverse` doesn't need to be differentiable
+    and it will always run in `torch.inference_mode()` mode with `strict=True`.
+    It shouldn't have side effects and must not modify the outputs (its inputs)
+    in-place in most cases. It only needs to compute the input tensors and can
+    return anything for non-tensor inputs but it is a good practice to return
+    them to allow for nesting invertible functions.
+
+    For more granular control, it also expects an additional keyword argument
+    `saved` which is the set of the positions of the inputs that are in memory.
+    Here is the inverse of the previous example:
+    ```python
+    def inverse(z, y, saved=()):
+        x = z - y if 0 in saved else None
+        return x, y
+    ```
+    You might notice that `1` (for `y`) will always be in `saved` since it is
+    an output of `function` and might be used in later operations. This was
+    detected automatically by checking if any output share the same memory with
+    an input. To manually select tensors to keep in memory, you can pass them
+    to the `keep` argument as a tuple of tensors that are in the input already.
+
+    There are few caveats to consider though. Invertible functions are hard to
+    define without requiring more memory. Moreover, they are prone to numerical
+    instabilities (e.g., multiplying by numbers close to zero). Even if we can
+    get away with these fundamental problems, there are technical details to
+    consider here. There is no way of guarding against accessing the data in
+    the input tensors after calling the function and before the backward pass.
+    It is up to the user to ensure this. Otherwise, it is possible to run into
+    illegal memory access errors. Think of residual connections as an example.
+    In `x + f(x)`, assuming `f` is an invertible checkpoint, `x` will be freed
+    from memory before the sum is computed. On the other hand, we can maybe
+    use `x.clone() + f(x)` (not `f(x) + x.clone()`!) but now we have a copy of
+    `x` in memory. It is recommended to encapsulate this inside `f` itself or
+    use the simple checkpoint instead. Other alternatives exists and you should
+    study your case carefully before deciding to use this. Fore instance, check
+    out `torch.autograd.graph.saved_tensors_hooks()` and `graph.save_on_cpu()`.
+    Source: https://github.com/xmodar/invtorch
+
     Args:
         function: this is any forward function with positional arguments
         *inputs: input arguments tuple to be passed to `function`
@@ -72,139 +115,111 @@ def checkpoint(
     if not strict:  # use torch.utils.checkpoint.checkpoint
         return _checkpoint(function, *inputs, preserve_rng_state=seed)
 
-    def _function(_, *inputs):
-        strict = not torch.is_grad_enabled()
-        outputs = function(*materialize(inputs), strict_forward=strict)
-        assert isinstance(outputs, (torch.Tensor, tuple)), 'wrong output type'
-        current = map(requires_grad, pack(outputs))
-        if strict:  # get manually set requires_grad for output tensors
-            grads.extend(current)
-        else:  # and check them against automatically set requires_grad
-            bad = {i for i, (g, c) in enumerate(zip(grads, current)) if g != c}
-            if bad:
-                expected = [(i in bad) != g for i, g in enumerate(grads)]
-                msg = ('manually set requires_grad for output tensors in '
-                       'strict mode mismatched automatically set values in '
-                       'the backward pass. Please, debug your implementation '
-                       'carfully and try to cover all the cases. Keep in mind '
-                       'the paramters of any model you call in `function`.'
-                       f'\nExpected: {expected}\nReceived: {grads}')
-                raise RuntimeError(msg)
-        return outputs
-
-    grads = []  # to be filled by `_function` with requires_grad of outputs
-    materialize = lambda x: x  # dummy stub replaced and used in inverse mode
-    nonce = torch.tensor((), requires_grad=True)  # ensures differentiability
-    outputs = _checkpoint(_function, nonce, *inputs, preserve_rng_state=seed)
-
-    # detach tensors that don't require gradients
-    packed_outputs = []
-    for grad, argument in zip(grads, pack(outputs)):
-        if torch.is_tensor(argument) and not grad:
-            argument = argument.detach()
-        packed_outputs.append(argument)
-    packed_outputs = tuple(packed_outputs)
-    outputs = packed_outputs[0] if torch.is_tensor(outputs) else packed_outputs
-
-    if not any(grads):  # apparently, `function` was not differentiable
-        return outputs
-
-    if inverse is not None:  # see if we really need inverse
-        keep = get_tensor_id_set(*keep, *packed_outputs)
-        seep = get_tensor_id_set(*inputs) - keep  # tensors to marshal
-        if not seep:  # if we need to keep all input tensors
-            inverse = None  # then, ignore the inverse function
-    if inverse is None:
-        return outputs
-
-    def materialize(inputs):  # pylint: disable=function-redefined
-        with torch.no_grad():
-            inverted = pack(inverse(*packed_outputs))
-            assert isinstance(inverted, tuple), 'inverse has wrong output type'
-        inputs = _Materialize.apply(deallocated, inverted, *inputs)
-        if seed:
-            torch.set_rng_state(cpu_rng_state)
-            for device, gpu_rng_state in zip(rng_devices, gpu_rng_states):
-                torch.cuda.set_rng_state(gpu_rng_state, device)
-        return inputs
-
-    if seed:
-        ctx = packed_outputs[grads.index(True)].grad_fn
-        cpu_rng_state = ctx.fwd_cpu_state
-        rng_devices = ctx.fwd_gpu_devices if ctx.had_cuda_in_fwd else []
-        gpu_rng_states = ctx.fwd_gpu_states if ctx.had_cuda_in_fwd else []
-
-    deallocated = set()
-    for i, tensor in enumerate(inputs):
-        if torch.is_tensor(tensor) and get_tensor_id(tensor) in seep:
-            tensor.storage().resize_(0)  # deallocate the tensor
-            deallocated.add(i)
-    return outputs
-
-
-class _Materialize(torch.autograd.Function):
-    """Don't use! This function is intended only for checkpoint()"""
-    # pylint: disable=abstract-method, arguments-differ
-    @staticmethod
-    def forward(ctx, deallocated, inverted, *inputs):
-        ctx.set_materialize_grads(False)
-        outputs, non_differentiable = [], []
-        for i, (original, tensor) in enumerate(zip(inputs, inverted)):
-            outputs.append(tensor if i in deallocated else original)
-            if not original.requires_grad:
-                non_differentiable.append(tensor)
-        ctx.mark_non_differentiable(*non_differentiable)
-        return tuple(outputs)
-
-    @staticmethod
-    def backward(_, *grads):
-        return (None, None) + grads
+    return CheckpointFunction.apply(function, inverse, keep, seed, *inputs)
 
 
 class CheckpointFunction(torch.autograd.Function):
-    """Same as `torch.utils.checkpoint.CheckpointFunction`"""
+    """Improved `torch.utils.checkpoint.CheckpointFunction` (invertible)"""
     # pylint: disable=abstract-method, arguments-differ, protected-access
+    @classmethod
+    def apply(cls, function, inverse, keep, seed, *inputs):
+        """Refer to `invtorch.checkpoint()` for the arguments' details"""
+        dif = torch.tensor((), requires_grad=True)  # ensures differentiability
+        return super().apply(function, inverse, pack(keep), seed, dif, *inputs)
+
     @staticmethod
-    def forward(ctx, function, preserve_rng_state, *args):
-        devices = (x.device for x in args if torch.is_tensor(x) and x.is_cuda)
-        ctx.function = function
+    def forward(ctx, function, inverse, keep, seed, _, *args):
+        # capture autocast and RNG states and run the function
+        ctx.set_materialize_grads(False)
         ctx.autocast = torch.is_autocast_enabled()
-        ctx.rng = DelayedRNGFork(devices, preserve_rng_state)
-        ctx.inputs = []
-        ctx.tensor_indices = []
-        tensor_inputs = []
-        for i, arg in enumerate(args):
-            if torch.is_tensor(arg):
-                tensor_inputs.append(arg)
-                ctx.tensor_indices.append(i)
-                ctx.inputs.append(None)
+        devices = (x.device for x in args if torch.is_tensor(x) and x.is_cuda)
+        ctx.forked_rng = DelayedRNGFork(devices, seed)
+        outputs = function(*args, strict_forward=True)
+        assert isinstance(outputs, (torch.Tensor, tuple))
+
+        # bookkeep differentiable tensors
+        ctx.grads, non_differentiable = [], []
+        for argument in pack(outputs):
+            does_require = False
+            if torch.is_tensor(argument):
+                if argument.requires_grad:
+                    does_require = True
+                else:
+                    non_differentiable.append(argument)
+            ctx.grads.append(does_require)
+        ctx.mark_non_differentiable(*non_differentiable)
+        if not any(ctx.grads):
+            return outputs  # apparently, `function` was not differentiable
+
+        # get all tensors that should be deallocated from memory
+        if inverse is None:
+            seep = ()
+        else:
+            keep = get_tensor_id_set(*keep, *pack(outputs))
+            seep = get_tensor_id_set(*args) - keep
+            inverse = inverse if seep else None
+        ctx.function, ctx.inverse = function, inverse
+
+        # separate kept and deallocated tensors from other inputs
+        ctx.indices, tensors, ctx.deallocated, ctx.inputs = [], [], set(), {}
+        for i, argument in enumerate(args):
+            if torch.is_tensor(argument):
+                ctx.indices.append(i)
+                tensors.append(argument)
+                if get_tensor_id(argument) in seep:
+                    argument.storage().resize_(0)  # deallocate the tensor
+                    ctx.deallocated.add(i)
             else:
-                ctx.inputs.append(arg)
-        ctx.save_for_backward(*tensor_inputs)
-        with torch.no_grad():
-            return function(*args)
+                ctx.inputs[i] = argument
+        ctx.save_for_backward(*tensors)
+        if seep:
+            ctx.outputs = outputs
+        return outputs
 
     @staticmethod
     def backward(ctx, *args):
         if not torch.autograd._is_checkpoint_valid():
             raise RuntimeError('.grad()/.backward(inputs=...) not supported')
-        inputs = list(ctx.inputs)
-        tensor_indices = ctx.tensor_indices
+
+        # materialize any deallocated tensors by calling inverse
         tensors = ctx.saved_tensors
-        for i, idx in enumerate(tensor_indices):
+        if ctx.inverse is not None:
+            with torch.inference_mode():
+                saved = set(range(len(ctx.grads))) - ctx.deallocated
+                inverted = pack(ctx.inverse(*pack(ctx.outputs), saved=saved))
+                for i in ctx.deallocated:
+                    tensors[i].set_(inverted[i])
+            ctx.inverse = ctx.outputs = inverted = None
+
+        # detach input tensors and run function again but in grad_mode
+        inputs = ctx.inputs.copy()
+        for i, idx in enumerate(ctx.indices):
             inputs[idx] = tensors[i].detach()
             inputs[idx].requires_grad_(tensors[i].requires_grad)
-        with ctx.rng:
+        inputs = [inputs[i] for i in range(len(inputs))]
+        with ctx.forked_rng:
             with torch.enable_grad(), torch.cuda.amp.autocast(ctx.autocast):
-                outputs = pack(ctx.function(*inputs))
-        outputs_with_grad = []
-        args_with_grad = []
-        for i, output in enumerate(outputs):
-            if requires_grad(output):
+                outputs = pack(ctx.function(*inputs, strict_forward=False))
+
+        # check if requires_grad matches that of strict_forward mode
+        current = map(requires_grad, outputs)
+        bad = {i for i, (g, c) in enumerate(zip(ctx.grads, current)) if g != c}
+        if bad:
+            expected = [(i in bad) != g for i, g in enumerate(ctx.grads)]
+            msg = ('manually set requires_grad for output tensors in '
+                   'strict mode mismatched automatically set values in '
+                   'the backward pass. Please, debug your implementation '
+                   'carfully and try to cover all the cases. Keep in mind '
+                   'the paramters of any model you call in `function`.'
+                   f'\nExpected: {expected}\nReceived: {ctx.grads}')
+            raise RuntimeError(msg)
+
+        # perform the backward pass on outputs that requires_grad
+        outputs_with_grad, args_with_grad = [], []
+        for output, arg in zip(outputs, args):
+            if arg is not None and requires_grad(output):
                 outputs_with_grad.append(output)
-                args_with_grad.append(args[i])
-        if len(outputs_with_grad) == 0:
-            raise RuntimeError('no output has requires_grad=True')
+                args_with_grad.append(arg)
         torch.autograd.backward(outputs_with_grad, args_with_grad)
         grads = (x.grad if torch.is_tensor(x) else None for x in inputs)
-        return (None, None, *grads)
+        return (None, None, None, None, None, *grads)
