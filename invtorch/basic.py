@@ -3,9 +3,10 @@ import functools
 
 import torch
 from torch import nn
-import torch.nn.functional as F
+from torch.nn import functional as F
 
 from .core import InvertibleModule
+from .utils import requires_grad
 
 __all__ = ['InvertibleLinear']
 
@@ -13,17 +14,19 @@ __all__ = ['InvertibleLinear']
 class InvertibleLinear(InvertibleModule):
     """Invertible linear module"""
     @functools.wraps(torch.nn.Linear.__init__)
-    def __init__(self, *args, invertible=True, checkpoint=True, **kwargs):
-        super().__init__(invertible=invertible, checkpoint=checkpoint)
+    def __init__(self, *args, **kwargs):
+        super().__init__()
         self.model = nn.Linear(*args, **kwargs)
 
-    def function(self, inputs):  # pylint: disable=arguments-differ
+    # pylint: disable=arguments-differ, unused-argument
+    def function(self, inputs, strict_forward=False):
         """Compute the outputs of the function"""
         outputs = F.linear(inputs, self.weight, self.bias)
-        requires_grad = self.do_require_grad(inputs, self.weight, self.bias)
-        return outputs.requires_grad_(requires_grad)
+        if strict_forward:
+            requires_grad(outputs, any=(inputs, self.weight, self.bias))
+        return outputs
 
-    def inverse(self, outputs):  # pylint: disable=arguments-differ
+    def inverse(self, outputs, saved=()):
         """Compute the inputs of the function"""
         if self.bias is not None:
             outputs = outputs - self.bias
