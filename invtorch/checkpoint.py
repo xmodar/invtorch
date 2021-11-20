@@ -73,7 +73,7 @@ def checkpoint(
 
     def _function(_, *inputs):
         strict = not torch.is_grad_enabled()
-        outputs = function(*inputs, strict_forward=strict)
+        outputs = function(*materialize(inputs), strict_forward=strict)
         assert isinstance(outputs, (torch.Tensor, tuple)), 'wrong output type'
         current = map(requires_grad, pack(outputs))
         if strict:  # get manually set requires_grad for output tensors
@@ -81,7 +81,7 @@ def checkpoint(
         else:  # and check them against automatically set requires_grad
             bad = {i for i, (g, c) in enumerate(zip(grads, current)) if g != c}
             if bad:
-                expected = [i in bad != g for i, g in enumerate(grads)]
+                expected = [(i in bad) != g for i, g in enumerate(grads)]
                 msg = ('manually set requires_grad for output tensors in '
                        'strict mode mismatched automatically set values in '
                        'the backward pass. Please, debug your implementation '
@@ -92,6 +92,7 @@ def checkpoint(
         return outputs
 
     grads = []  # to be filled by `_function` with requires_grad of outputs
+    materialize = lambda x: x  # dummy stub replaced and used in inverse mode
     nonce = torch.tensor((), requires_grad=True)  # ensures differentiability
     outputs = _checkpoint(_function, nonce, *inputs, preserve_rng_state=seed)
 
@@ -115,28 +116,45 @@ def checkpoint(
     if inverse is None:
         return outputs
 
-    @torch.inference_mode()
-    def materialize():
-        inputs = pack(inverse(*packed_outputs))
-        assert isinstance(inputs, tuple), 'inverse has wrong output type'
-        for i, tensor in deallocated.items():
-            tensor.set_(inputs[i])
+    def materialize(inputs):  # pylint: disable=function-redefined
+        with torch.no_grad():
+            inverted = pack(inverse(*packed_outputs))
+            assert isinstance(inverted, tuple), 'inverse has wrong output type'
+        inputs = _Materialize.apply(deallocated, inverted, *inputs)
+        if seed:
+            torch.set_rng_state(cpu_rng_state)
+            for device, gpu_rng_state in zip(rng_devices, gpu_rng_states):
+                torch.cuda.set_rng_state(gpu_rng_state, device)
+        return inputs
 
-    def marshal(index):
-        return lambda _: index
+    if seed:
+        ctx = packed_outputs[grads.index(True)].grad_fn
+        cpu_rng_state = ctx.fwd_cpu_state
+        rng_devices = ctx.fwd_gpu_devices if ctx.had_cuda_in_fwd else []
+        gpu_rng_states = ctx.fwd_gpu_states if ctx.had_cuda_in_fwd else []
 
-    def unmarshal(index):
-        deallocated.pop('materialize', lambda: None)()
-        return deallocated.pop(index)
-
-    deallocated = {'materialize': materialize}
-    tensors = ((i, x) for i, x in enumerate(inputs) if torch.is_tensor(x))
-    grad_fn = packed_outputs[grads.index(True)].grad_fn
-    saved = grad_fn._raw_saved_tensors  # pylint: disable=protected-access
-    for (i, tensor), saved_tensor in zip(tensors, saved):
-        if get_tensor_id(tensor) in seep:
+    deallocated = set()
+    for i, tensor in enumerate(inputs):
+        if torch.is_tensor(tensor) and get_tensor_id(tensor) in seep:
             tensor.storage().resize_(0)  # deallocate the tensor
-            # See: `torch.autograd.graph.saved_tensors_hooks()`
-            saved_tensor.register_hooks(marshal(i), unmarshal)
-            deallocated[i] = tensor
+            deallocated.add(i)
     return outputs
+
+
+class _Materialize(torch.autograd.Function):
+    """Don't use! This function is intended only for checkpoint()"""
+    # pylint: disable=abstract-method, arguments-differ
+    @staticmethod
+    def forward(ctx, deallocated, inverted, *inputs):
+        ctx.set_materialize_grads(False)
+        outputs, non_differentiable = [], []
+        for i, (original, tensor) in enumerate(zip(inputs, inverted)):
+            outputs.append(tensor if i in deallocated else original)
+            if not original.requires_grad:
+                non_differentiable.append(tensor)
+        ctx.mark_non_differentiable(*non_differentiable)
+        return tuple(outputs)
+
+    @staticmethod
+    def backward(_, *grads):
+        return (None, None) + grads
