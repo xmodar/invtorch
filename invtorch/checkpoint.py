@@ -2,7 +2,8 @@
 import torch
 from torch.utils.checkpoint import checkpoint as _checkpoint
 
-from .utils import get_tensor_id, get_tensor_id_set, pack, requires_grad
+from .utils import (DelayedRNGFork, get_tensor_id, get_tensor_id_set, pack,
+                    requires_grad)
 
 __all__ = ['checkpoint']
 
@@ -158,3 +159,52 @@ class _Materialize(torch.autograd.Function):
     @staticmethod
     def backward(_, *grads):
         return (None, None) + grads
+
+
+class CheckpointFunction(torch.autograd.Function):
+    """Same as `torch.utils.checkpoint.CheckpointFunction`"""
+    # pylint: disable=abstract-method, arguments-differ, protected-access
+    @staticmethod
+    def forward(ctx, function, preserve_rng_state, *args):
+        devices = (x.device for x in args if torch.is_tensor(x) and x.is_cuda)
+        ctx.function = function
+        ctx.autocast = torch.is_autocast_enabled()
+        ctx.rng = DelayedRNGFork(devices, preserve_rng_state)
+        ctx.inputs = []
+        ctx.tensor_indices = []
+        tensor_inputs = []
+        for i, arg in enumerate(args):
+            if torch.is_tensor(arg):
+                tensor_inputs.append(arg)
+                ctx.tensor_indices.append(i)
+                ctx.inputs.append(None)
+            else:
+                ctx.inputs.append(arg)
+        ctx.save_for_backward(*tensor_inputs)
+        with torch.no_grad():
+            return function(*args)
+
+    @staticmethod
+    def backward(ctx, *args):
+        if not torch.autograd._is_checkpoint_valid():
+            raise RuntimeError('.grad()/.backward(inputs=...) not supported')
+        inputs = list(ctx.inputs)
+        tensor_indices = ctx.tensor_indices
+        tensors = ctx.saved_tensors
+        for i, idx in enumerate(tensor_indices):
+            inputs[idx] = tensors[i].detach()
+            inputs[idx].requires_grad_(tensors[i].requires_grad)
+        with ctx.rng:
+            with torch.enable_grad(), torch.cuda.amp.autocast(ctx.autocast):
+                outputs = pack(ctx.function(*inputs))
+        outputs_with_grad = []
+        args_with_grad = []
+        for i, output in enumerate(outputs):
+            if requires_grad(output):
+                outputs_with_grad.append(output)
+                args_with_grad.append(args[i])
+        if len(outputs_with_grad) == 0:
+            raise RuntimeError('no output has requires_grad=True')
+        torch.autograd.backward(outputs_with_grad, args_with_grad)
+        grads = (x.grad if torch.is_tensor(x) else None for x in inputs)
+        return (None, None, *grads)
