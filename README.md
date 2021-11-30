@@ -18,22 +18,26 @@ The main module that we are interested in is `InvertibleModule` which inherits f
 ```python
 import torch
 from torch import nn
-from invtorch import InvertibleModule, requires_grad
+
+import invtorch
+import invtorch.nn as inn
 
 
-class InvertibleLinear(InvertibleModule):
+class InvertibleLinear(inn.Module):
     def __init__(self, in_features, out_features):
-        super().__init__(invertible=True, checkpoint=True, seed=False)
+        super().__init__()
         self.weight = nn.Parameter(torch.randn(out_features, in_features))
         self.bias = nn.Parameter(torch.randn(out_features))
 
     def function(self, inputs, strict_forward=False):
         outputs = inputs @ self.weight.T + self.bias
         if strict_forward:
-            requires_grad(outputs, any=(inputs, self.weight, self.bias))
+            invtorch.requires_grad(outputs, any=(inputs, self.weight, self.bias))
         return outputs
 
     def inverse(self, outputs, saved=()):
+        if 0 in saved:
+            return None
         return (outputs - self.bias) @ self.weight.T.pinverse()
 ```
 
@@ -52,7 +56,7 @@ Now, this model is ready to be instantiated and used directly.
 ```python
 x = torch.randn(10, 3)
 model = InvertibleLinear(3, 5)
-print('Consistent strict_forward:', model.check_function  (x))
+print('Consistent strict_forward:', model.check_function(x))
 print('Is invertible:', model.check_inverse(x))
 
 y = model(x)
@@ -71,17 +75,13 @@ print('Input was restored:', x.storage().size() != 0)
 
 Under the hood, `InvertibleModule` uses `invtorch.checkpoint()`; a low-level implementation which allows it to function. It is an improved version of `torch.utils.checkpoint.checkpoint()`. There are few considerations to keep in mind when working with invertible checkpoints and non-materialized tensors. Please, refer to the [documentation](./invtorch/core.py) in the code for more details.
 
-## Overriding `forward()`
-
-Although `forward()` is now doing important things to ensure the validity of the results when calling `invtorch.checkpoint()`, it can still be overridden. The main reason of doing so is to provide a more user-friendly interface; function signature and output format. For example, `function()` could return extra outputs that are not needed in the module outputs but are essential for correctly computing the `inverse()`. In such case, define `forward()` to wrap `outputs = super().forward(*inputs, strict_forward=strict_forward)` more cleanly.
-
 ## TODOs
 
 Here are few feature ideas that could be implemented to enrich the utility of this package:
 
 - Add more basic operations and modules
-- Add coupling and interleave -based invertible operations
-- Add more checks to help the user in debugging more features
+- Add coupling- and interleave-based invertible operations
+- Add more checks to help the user debug more features
 - Context-manager to temporarily change the mode of operation
 - Implement dynamic discovery for outputs that requires_grad
 - Develop an automatic mode optimization for a network for various objectives

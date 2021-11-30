@@ -1,13 +1,11 @@
 """InvTorch: Core Invertible Utilities https://github.com/xmodar/invtorch"""
-import itertools
-
 import torch
 from torch.utils.checkpoint import checkpoint as _checkpoint
 
 from .utils import (DelayedRNGFork, get_tensor_id, get_tensor_id_set, pack,
                     requires_grad)
 
-__all__ = ['InvertibleModule', 'checkpoint']
+__all__ = ['checkpoint']
 
 
 def checkpoint(
@@ -59,7 +57,7 @@ def checkpoint(
     deallocate them as well and recover them using `inverse`. It should be a
     function that takes all output arguments of `function` and returns all the
     computed inputs. In general, `inverse` doesn't need to be differentiable
-    and it will always run in `torch.inference_mode()` mode with `strict=True`.
+    and it will run in `torch.inference_mode()` with `strict_forward=True`.
     It shouldn't have side effects and must not modify the outputs (its inputs)
     in-place in most cases. It only needs to compute the input tensors and can
     return anything for non-tensor inputs but it is a good practice to return
@@ -225,101 +223,3 @@ class CheckpointFunction(torch.autograd.Function):
         torch.autograd.backward(outputs_with_grad, args_with_grad)
         grads = (x.grad if torch.is_tensor(x) else None for x in inputs)
         return (None, None, None, None, None, *grads)
-
-
-class InvertibleModule(torch.nn.Module):
-    """Base invertible `inputs = self.inverse(*self.function(*inputs))`
-
-    Use this with great caution. Refer to the notes in `invtorch.checkpoint()`
-    Source: https://github.com/xmodar/invtorch
-    """
-    keep = ()  # input indices to keep in memory; by default, keep nothing
-
-    def __init__(self, invertible=True, checkpoint=True, seed=False):
-        # pylint: disable=redefined-outer-name
-        super().__init__()
-        self.seed = bool(seed)  # preserve RNG state in backward
-        self.invertible = invertible  # use inverse if checkpointing is enabled
-        self.checkpoint = checkpoint  # enables or disables checkpointing
-
-    def forward(self, *inputs):
-        """Perform the forward pass"""
-        disabled = (not self.checkpoint or not torch.is_grad_enabled()
-                    or not (requires_grad(any=self.parameters())
-                            or requires_grad(any=inputs)))
-        return checkpoint(
-            self.function,
-            *inputs,
-            seed=self.seed,
-            strict=True,
-            enabled=not disabled,
-            inverse=self.inverse if self.invertible else None,
-            keep=tuple(inputs[i] for i in self.keep),
-        )
-
-    def function(self, *inputs, strict_forward=False):
-        """Compute the outputs of the function given the inputs
-
-        The first run of function will be in no_grad mode. Thus, you must
-        manually call `.requires_grad_(True/False)` for all output tensors when
-        `strict_forward` is set to `True`. Infer the values from requires_grad
-        of `inputs` and `self.parameters()`. You should handle all possible
-        combinations or you will get some errors in backward. You can verify
-        your implementation by simply calling `self.check_function()`.
-        """
-        raise NotImplementedError
-
-    def inverse(self, *outputs, saved=()):
-        """Compute the inputs of the function given the outputs
-
-        Verify your implementation by calling `self.check_inverse()`.
-        """
-        raise NotImplementedError
-
-    @property
-    def checkpoint(self):
-        """Whether the module is in checkpoint or pass_through mode"""
-        return self._checkpoint
-
-    @checkpoint.setter
-    def checkpoint(self, value):
-        if value:
-            self._checkpoint = True
-        else:
-            self._checkpoint = self._invertible = False
-
-    @property
-    def invertible(self):
-        """Whether the module is in invertible or simple checkpoint mode"""
-        return self._checkpoint and self._invertible
-
-    @invertible.setter
-    def invertible(self, value):
-        if value:
-            self._invertible = self._checkpoint = True
-        else:
-            self._invertible = False
-
-    def check_function(self, *inputs):
-        """Check if `self.function()` is consistent in strict_forward mode"""
-        with torch.enable_grad():
-            outputs = pack(self.function(*inputs, strict_forward=False))
-        with torch.no_grad():
-            dry_outputs = pack(self.function(*inputs, strict_forward=True))
-        assert len(dry_outputs) == len(outputs), 'number of outputs'
-        grads = map(requires_grad, outputs)
-        dry = map(requires_grad, dry_outputs)
-        bad = {i for i, (d, g) in enumerate(zip(dry, grads)) if d != g}
-        expected = [(i in bad) != g for i, g in enumerate(dry)]
-        assert not bad, f'Received: {dry}\nExpected: {expected}'
-        return True
-
-    @torch.inference_mode()
-    def check_inverse(self, *inputs, atol=1e-5, rtol=1e-3):
-        """Check if `self.inverse()` computes correct input tensors"""
-        outputs = pack(self.inverse(*pack(self.function(*inputs))))
-        for inputs, outputs in itertools.zip_longest(inputs, outputs):
-            is_tensor = torch.is_tensor(inputs)
-            assert is_tensor == torch.is_tensor(outputs)
-            assert not is_tensor or torch.allclose(inputs, outputs, rtol, atol)
-        return True
