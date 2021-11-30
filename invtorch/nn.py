@@ -17,12 +17,14 @@ class Module(nn.Module):
     Use this with great caution. Refer to the notes in `invtorch.checkpoint()`
     Source: https://github.com/xmodar/invtorch
     """
+    reversible = False  # whether function and inverse can be switched
+
     def __init__(self):
         super().__init__()
         self.seed = False  # preserve RNG state in backward
-        self.reversed = False  # switch function and inverse
-        self.invertible = True  # use inverse if checkpointing is enabled
         self.checkpoint = True  # enables or disables checkpointing
+        self.invertible = True  # use inverse if checkpointing is enabled
+        self.reversed = False  # switch function and inverse
 
     def function(self, *inputs, strict_forward=False, saved=()):
         """Compute the outputs of the function given the inputs
@@ -30,11 +32,16 @@ class Module(nn.Module):
         The first run of function will be in no_grad mode. Therefore, you must
         manually call `.requires_grad_(True/False)` for all output tensors when
         `strict_forward` is set to `True`. Infer the values from requires_grad
-        of `inputs` and `self.parameters()`. You should handle all possible
+        of `inputs` and all used parameters. You should handle all possible
         combinations or you will get some errors in backward. You can verify
         your implementation by simply calling `self.check_function()`.
         """
         raise NotImplementedError
+
+    @property
+    def call_function(self):
+        """Current function (according to `self.reversed`)"""
+        return self.inverse if self.reversed else self.function
 
     def inverse(self, *outputs, strict_forward=False, saved=()):
         """Compute the inputs of the function given the outputs
@@ -43,36 +50,34 @@ class Module(nn.Module):
         """
         raise NotImplementedError
 
-    def forward(self, *inputs, **kwargs):
-        """Perform the forward pass"""
-        kwargs.setdefault('seed', self.seed)
-        invertible = kwargs.pop('invertible', self.invertible)
-        enabled = kwargs.pop('enabled', True)
-        enabled = enabled and kwargs.pop('checkpoint', self.checkpoint)
-        return checkpoint(
-            self.call_function,
-            *inputs,
-            enabled=enabled,
-            inverse=self.call_inverse if invertible else None,
-            **kwargs,
-        )
-
-    def reverse(self, mode=None):
-        """Switch function and inverse (works if they are fully implemented)"""
-        if mode is None:
-            mode = not self.reversed
-        self.reversed = bool(mode)
-        return self
-
-    @property
-    def call_function(self):
-        """Current function (according to `self.reversed`)"""
-        return self.inverse if self.reversed else self.function
-
     @property
     def call_inverse(self):
         """Current inverse (according to `self.reversed`)"""
         return self.function if self.reversed else self.inverse
+
+    def reverse(self, mode=None):
+        """Switch function and inverse"""
+        self.reversed = not self.reversed if mode is None else mode
+        return self
+
+    def forward(self, *inputs, **kwargs):
+        """Perform the forward pass"""
+        self.process_checkpoint_arguments(kwargs)
+        return checkpoint(kwargs.pop('function'), *inputs, **kwargs)
+
+    def process_checkpoint_arguments(self, kwargs):
+        """Populate the keyword arguments of `invtorch.checkpoint()`"""
+        kwargs.setdefault('seed', self.seed)
+        use_checkpoint = kwargs.pop('checkpoint', self.checkpoint)
+        kwargs['enabled'] = kwargs.get('enabled', True) and use_checkpoint
+        function = kwargs.pop('function', self.function)
+        inverse = kwargs.pop('inverse', self.inverse)
+        if kwargs.pop('reversed', self.reversed):
+            function, inverse = inverse, function
+        if not kwargs.pop('invertible', self.invertible):
+            inverse = None
+        kwargs['function'], kwargs['inverse'] = function, inverse
+        return kwargs
 
     @property
     def checkpoint(self):
@@ -97,6 +102,19 @@ class Module(nn.Module):
             self._invertible = self._checkpoint = True
         else:
             self._invertible = False
+
+    @property
+    def reversed(self):
+        """Whether function and inverse should be switched"""
+        return self._reversed
+
+    @reversed.setter
+    def reversed(self, value):
+        if value:
+            assert self.reversible, 'module is not reversible'
+            self._reversed = True
+        else:
+            self._reversed = False
 
     def check_function(self, *inputs):
         """Check if `self.call_function()` is consistent when strict_forward"""
@@ -125,19 +143,22 @@ class Module(nn.Module):
     def get_extra_state(self):
         return {
             'seed': self.seed,
-            'reversed': self.reversed,
-            'invertible': self.invertible,
             'checkpoint': self.checkpoint,
+            'invertible': self.invertible,
+            'reversed': self.reversed,
         }
 
     def set_extra_state(self, state):
         self.seed = state['seed']
-        self.reversed = state['reversed']
-        self.invertible = state['invertible']
         self.checkpoint = state['checkpoint']
+        self.invertible = state['invertible']
+        self.reversed = state['reversed']
 
     def extra_repr(self):
-        return ', '.join(f'{k}={v}' for k, v in self.get_extra_state().items())
+        extra = f'reversed={self.reversed}, checkpoint={self.checkpoint}'
+        if self.checkpoint:
+            extra += f', invertible={self.invertible}, seed={self.seed}'
+        return extra
 
 
 class Linear(Module):
@@ -146,6 +167,12 @@ class Linear(Module):
         super().__init__()
         assert isinstance(model, nn.Linear), f'{type(model)} not nn.Linear'
         self.model = model
+        assert self.out_features >= self.in_features, 'few out_features'
+
+    @property
+    def reversible(self):
+        """Whether function and inverse can be switched"""
+        return self.in_features == self.out_features
 
     # pylint: disable=arguments-differ
     def function(self, inputs, *, strict_forward=False, saved=()):
