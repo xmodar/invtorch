@@ -17,8 +17,6 @@ class Module(nn.Module):
     Use this with great caution. Refer to the notes in `invtorch.checkpoint()`
     Source: https://github.com/xmodar/invtorch
     """
-    reversible = False  # whether function and inverse can be switched
-
     def __init__(self):
         super().__init__()
         self.seed = False  # preserve RNG state in backward
@@ -54,6 +52,11 @@ class Module(nn.Module):
     def call_inverse(self):
         """Current inverse (according to `self.reversed`)"""
         return self.function if self.reversed else self.inverse
+
+    @property
+    def reversible(self):
+        """Whether function and inverse can be switched"""
+        return True
 
     def reverse(self, mode=None):
         """Switch function and inverse"""
@@ -136,8 +139,9 @@ class Module(nn.Module):
         outputs = pack(self.call_inverse(*pack(self.call_function(*inputs))))
         for inputs, outputs in itertools.zip_longest(inputs, outputs):
             is_tensor = torch.is_tensor(inputs)
-            assert is_tensor == torch.is_tensor(outputs)
-            assert not is_tensor or torch.allclose(inputs, outputs, rtol, atol)
+            assert is_tensor == torch.is_tensor(outputs), 'out types mismatch'
+            same = not is_tensor or torch.allclose(inputs, outputs, rtol, atol)
+            assert same, 'an inverted tensor mismatched (try double precision)'
         return True
 
     def get_extra_state(self):
@@ -186,11 +190,10 @@ class Linear(WrapperModule):
 
     def __init__(self, module):
         super().__init__(module)
-        assert self.out_features >= self.in_features, 'few out_features'
+        assert self.in_features <= self.out_features, 'few out_features'
 
     @property
     def reversible(self):
-        """Whether function and inverse can be switched"""
         return self.in_features == self.out_features
 
     # pylint: disable=arguments-differ
@@ -213,3 +216,80 @@ class Linear(WrapperModule):
         if strict_forward:
             requires_grad(inputs, any=(outputs, self.weight, self.bias))
         return inputs
+
+
+class Conv(WrapperModule):
+    """Invertible convolution"""
+    wrapped_types = (nn.Conv1d, nn.Conv2d, nn.Conv3d)
+
+    def __init__(self, module):
+        super().__init__(module)
+        outputs, inputs = self.flat_weight_shape
+        assert inputs <= outputs, f'out_channels/groups={outputs} < {inputs}'
+        # TODO: assert kernel_size is still invertible given stride & dilation
+
+    @property
+    def reversible(self):
+        outputs, inputs = self.flat_weight_shape
+        return inputs == outputs, f'out_channels/groups={outputs} != {inputs}'
+
+    # pylint: disable=arguments-differ
+    def function(self, inputs, *, strict_forward=False, saved=()):
+        if 0 in saved:
+            return None
+        input_padding = self.get_input_padding(inputs.shape)
+        assert sum(input_padding) == 0, f'inputs need padding: {inputs.shape}'
+        outputs = self.module.forward(inputs)
+        if strict_forward:
+            requires_grad(outputs, any=(inputs, self.weight, self.bias))
+        return outputs
+
+    def inverse(self, outputs, *, strict_forward=False, saved=()):
+        if 0 in saved:
+            return None
+        old_outputs = outputs
+        if self.bias is not None:
+            outputs = outputs - self.bias.view(-1, *[1] * self.dim)
+
+        # compute the overlapped inputs
+        factor, input_shape = self.flat_weight_shape
+        weight = self.weight.view(self.groups, -1, input_shape)
+        weight = weight.pinverse().transpose(-1, -2).reshape_as(self.weight)
+        inputs = self.conv_transpose(outputs, weight)
+
+        # normalize the overlapping regions
+        one = torch.ones((), device=inputs.device, dtype=inputs.dtype)
+        outputs = (one / factor).expand(1, *outputs.shape[1:])
+        overlaps_weight = one.expand(self.out_channels, 1, *self.kernel_size)
+        overlaps = self.conv_transpose(outputs, overlaps_weight)
+        inputs = inputs.div_(overlaps)
+
+        if strict_forward:
+            requires_grad(inputs, any=(old_outputs, self.weight, self.bias))
+        return inputs
+
+    def get_input_padding(self, input_size):
+        """Get the input padding given the input size"""
+        def rule(size, kernel_size, stride, padding, dilation):
+            margin = 2 * padding - dilation * (kernel_size - 1) - 1
+            return size - ((size + margin) // stride) * stride + margin
+
+        input_size = tuple(input_size)[-self.dim:]
+        args = self.kernel_size, self.stride, self.padding, self.dilation
+        return tuple(map(lambda x: rule(*x), zip(input_size, *args)))
+
+    def conv_transpose(self, inputs, weight):
+        """Compute conv_transpose"""
+        args = None, self.stride, self.padding, 0, self.groups, self.dilation
+        return getattr(F, f'conv_transpose{self.dim}d')(inputs, weight, *args)
+
+    @property
+    def dim(self):
+        """Number of dimensions"""
+        return self.weight.dim() - 2
+
+    @property
+    def flat_weight_shape(self):
+        """Output and input shapes"""
+        shape = self.weight.shape
+        return shape[0] // self.groups, shape[1:].numel()
