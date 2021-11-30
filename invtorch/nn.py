@@ -161,12 +161,31 @@ class Module(nn.Module):
         return extra
 
 
-class Linear(Module):
-    """Invertible linear module"""
-    def __init__(self, model):
+class WrapperModule(Module):
+    """Base wrapper invertible module"""
+    # pylint: disable=abstract-method
+    wrapped_types = ()
+
+    def __init__(self, module):
+        assert self.wrapped_types, 'define wrapped_types'
+        assert isinstance(module, self.wrapped_types), (
+            f'{type(module).__name__} is not in <{self.wrapped_types}>')
         super().__init__()
-        assert isinstance(model, nn.Linear), f'{type(model)} not nn.Linear'
-        self.model = model
+        self.module = module
+
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
+
+
+class Linear(WrapperModule):
+    """Invertible linear module"""
+    wrapped_types = nn.Linear
+
+    def __init__(self, module):
+        super().__init__(module)
         assert self.out_features >= self.in_features, 'few out_features'
 
     @property
@@ -194,9 +213,3 @@ class Linear(Module):
         if strict_forward:
             requires_grad(inputs, any=(outputs, self.weight, self.bias))
         return inputs
-
-    def __getattr__(self, name):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.model, name)
