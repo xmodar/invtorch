@@ -56,7 +56,7 @@ class Module(nn.Module):
     @property
     def reversible(self):
         """Whether function and inverse can be switched"""
-        return True
+        return False
 
     def reverse(self, mode=None):
         """Switch function and inverse"""
@@ -237,6 +237,7 @@ class Conv(WrapperModule):
     def function(self, inputs, *, strict_forward=False, saved=()):
         if 0 in saved:
             return None
+        # TODO: make input padding an opt-in feature
         input_padding = self.get_input_padding(inputs.shape)
         assert sum(input_padding) == 0, f'inputs need padding: {inputs.shape}'
         outputs = self.module.forward(inputs)
@@ -257,6 +258,7 @@ class Conv(WrapperModule):
         weight = weight.pinverse().transpose(-1, -2).reshape_as(self.weight)
         inputs = self.conv_transpose(outputs, weight)
 
+        # TODO: make kernel overlaps an opt-in feature
         # normalize the overlapping regions
         one = torch.ones((), device=inputs.device, dtype=inputs.dtype)
         outputs = (one / factor).expand(1, *outputs.shape[1:])

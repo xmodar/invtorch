@@ -3,7 +3,7 @@ import functools
 
 import torch
 
-__all__ = ['requires_grad', 'get_tensor_id', 'pack']
+__all__ = ['requires_grad']
 
 _any, _all = any, all
 
