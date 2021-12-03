@@ -1,6 +1,6 @@
 # InvTorch: Memory-Efficient Invertible Functions
 
-This module extends the functionality of `torch.utils.checkpoint.checkpoint` to work with invertible functions. So, not only the intermediate activations will be released from memory. The input tensors get deallocated and recomputed later using the inverse function only in the backward pass. This is useful in extreme situations where more compute is traded with memory. However, there are few caveats to consider which are detailed [here](./invtorch/core.py).
+This module extends the functionality of `torch.utils.checkpoint.checkpoint` to work with invertible functions. So, not only the intermediate activations will be released from memory. The input tensors get deallocated and recomputed later using the inverse function only in the backward pass. This is useful in extreme situations where more compute is traded with memory. However, there are few caveats to consider which are detailed [here](./invtorch/utils/checkpoint.py).
 
 ## Installation
 
@@ -19,8 +19,8 @@ The main module that we are interested in is `InvertibleModule` which inherits f
 import torch
 from torch import nn
 
-import invtorch
 import invtorch.nn as inn
+from invtorch.utils import requires_grad
 
 
 class InvertibleLinear(inn.Module):
@@ -32,7 +32,7 @@ class InvertibleLinear(inn.Module):
     def function(self, inputs, strict_forward=False):
         outputs = inputs @ self.weight.T + self.bias
         if strict_forward:
-            invtorch.requires_grad(outputs, any=(inputs, self.weight, self.bias))
+            requires_grad(outputs, any=(inputs, self.weight, self.bias))
         return outputs
 
     def inverse(self, outputs, saved=()):
@@ -47,7 +47,7 @@ You can immediately notice few differences to the regular PyTorch module here. T
 
 ### Requires Gradient
 
-`function()` must manually call `.requires_grad_(True/False)` on all output tensors when `strict_forward` is set to `True`. The forward pass is run in `no_grad` mode and there is no way to detect which output need gradients without tracing. It is possible to infer this from `requires_grad` values of the `inputs` and `self.parameters()`. The above code uses `invtorch.require_grad(any=...)` which returns `True` if any input did require gradient. In `inverse()`, the keyword argument `saved` is passed. Which is the set of inputs positions that are already saved in memory and there is no need to compute them.
+`function()` must manually call `.requires_grad_(True/False)` on all output tensors when `strict_forward` is set to `True`. The forward pass is run in `no_grad` mode and there is no way to detect which output need gradients without tracing. It is possible to infer this from `requires_grad` values of the `inputs` and `self.parameters()`. The above code uses `invtorch.utils.require_grad(any=...)` which returns `True` if any input did require gradient. In `inverse()`, the keyword argument `saved` is passed. Which is the set of inputs positions that are already saved in memory and there is no need to compute them.
 
 ### Example
 
@@ -73,7 +73,7 @@ print('Input was restored:', x.storage().size() != 0)
 
 ## Limitations
 
-Under the hood, `InvertibleModule` uses `invtorch.checkpoint()`; a low-level implementation which allows it to function. It is an improved version of `torch.utils.checkpoint.checkpoint()`. There are few considerations to keep in mind when working with invertible checkpoints and non-materialized tensors. Please, refer to the [documentation](./invtorch/core.py) in the code for more details.
+Under the hood, `InvertibleModule` uses `invtorch.checkpoint()`; a low-level implementation which allows it to function. It is an improved version of `torch.utils.checkpoint.checkpoint()`. There are few considerations to keep in mind when working with invertible checkpoints and non-materialized tensors. Please, refer to the [documentation](./invtorch/utils/checkpoint.py) in the code for more details.
 
 ## TODOs
 

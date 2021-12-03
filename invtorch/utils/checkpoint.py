@@ -1,11 +1,25 @@
-"""InvTorch: Core Invertible Utilities https://github.com/xmodar/invtorch"""
+"""Invertible Checkpoint"""
+import functools
+
 import torch
 from torch.utils.checkpoint import checkpoint as _checkpoint
 
-from .utils import (DelayedRNGFork, get_tensor_id, get_tensor_id_set, pack,
-                    requires_grad)
+from ..random import DelayedRNGFork
+from ..utils.tools import pack, requires_grad
 
 __all__ = ['checkpoint']
+
+
+def get_tensor_id(inputs, by_storage=True):
+    """Get a uniquely identifying key for a tensor based on its storage"""
+    assert torch.is_tensor(inputs)
+    return inputs.storage().data_ptr() if by_storage else id(inputs)
+
+
+def get_tensor_id_set(*inputs, by_storage=True):
+    """Get a set of only the tensors' ids"""
+    get_id = functools.partial(get_tensor_id, by_storage=by_storage)
+    return set(map(get_id, filter(torch.is_tensor, inputs)))
 
 
 def checkpoint(

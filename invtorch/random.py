@@ -1,45 +1,7 @@
-"""InvTorch: Utilities https://github.com/xmodar/invtorch"""
-import functools
-
+"""Random Number Generator Utilities"""
 import torch
 
-__all__ = ['requires_grad']
-
-_any, _all = any, all
-
-
-def requires_grad(inputs=None, *, any=None, all=None):
-    """Check if the inputs is a tensor that requires_grad"""
-    # pylint: disable=redefined-builtin
-    if any is not None or all is not None:
-        any = any is None or _any(map(requires_grad, any))
-        all = all is None or _all(map(requires_grad, all))
-        requires = any and all
-        if inputs is not None:
-            inputs.requires_grad_(requires)
-        return requires
-    else:
-        assert inputs is not None, 'You have to pass inputs'
-    return torch.is_tensor(inputs) and inputs.requires_grad
-
-
-def pack(inputs, is_tensor=False):
-    """Pack the inputs into tuple if they were a single tensor"""
-    single = torch.is_tensor(inputs)
-    outputs = (inputs, ) if single else inputs
-    return (outputs, single) if is_tensor else outputs
-
-
-def get_tensor_id(inputs, by_storage=True):
-    """Get a uniquely identifying key for a tensor based on its storage"""
-    assert torch.is_tensor(inputs)
-    return inputs.storage().data_ptr() if by_storage else id(inputs)
-
-
-def get_tensor_id_set(*inputs, by_storage=True):
-    """Get a set of only the tensors' ids"""
-    get_id = functools.partial(get_tensor_id, by_storage=by_storage)
-    return set(map(get_id, filter(torch.is_tensor, inputs)))
+__all__ = ['DelayedRNGFork']
 
 
 class DelayedRNGFork:
@@ -47,7 +9,6 @@ class DelayedRNGFork:
 
     This context manager captures the torch random number generator states on
     instantiation. Then, it can be used many times later using with-statements
-    Source: https://gist.github.com/xmodar/2328b13bdb11c6309ba449195a6b551a
 
     Example:
         rng = DelayedRNGFork(devices=[0])
