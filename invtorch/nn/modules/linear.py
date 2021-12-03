@@ -5,9 +5,26 @@ from torch import nn
 from torch.nn import functional as F
 
 from ...utils.tools import requires_grad
-from .module import WrapperModule
+from .module import Module, WrapperModule
 
-__all__ = ['Linear']
+__all__ = ['Identity', 'Linear']
+
+
+class Identity(Module):
+    """Identity function"""
+    @property
+    def reversible(self):
+        return True
+
+    def function(self, *inputs, strict_forward=False, saved=()):
+        # pylint: disable=unused-argument
+        return inputs[0] if len(inputs) == 1 else inputs
+
+    inverse = function
+
+    def forward(self, *inputs, **kwargs):
+        kwargs.setdefault('enabled', False)
+        return super().forward(*inputs, **kwargs)
 
 
 class Linear(WrapperModule):
