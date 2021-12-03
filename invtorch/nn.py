@@ -1,5 +1,6 @@
 """InvTorch: Basic Invertible Modules https://github.com/xmodar/invtorch"""
 import itertools
+import functools
 
 import torch
 from torch import nn
@@ -8,7 +9,7 @@ from torch.nn import functional as F
 from .core import checkpoint
 from .utils import pack, requires_grad
 
-__all__ = ['Module', 'Linear']
+__all__ = ['Module', 'Linear', 'Conv1d', 'Conv2d', 'Conv3d']
 
 
 class Module(nn.Module):
@@ -63,24 +64,27 @@ class Module(nn.Module):
         self.reversed = not self.reversed if mode is None else mode
         return self
 
+    def process_inputs(self, inputs):
+        """Process the inputs to `self.forward()` as tuples"""
+        return inputs
+
     def forward(self, *inputs, **kwargs):
         """Perform the forward pass"""
-        self.process_checkpoint_arguments(kwargs)
-        return checkpoint(kwargs.pop('function'), *inputs, **kwargs)
-
-    def process_checkpoint_arguments(self, kwargs):
-        """Populate the keyword arguments of `invtorch.checkpoint()`"""
+        inputs = self.process_inputs(inputs)
         kwargs.setdefault('seed', self.seed)
         use_checkpoint = kwargs.pop('checkpoint', self.checkpoint)
         kwargs['enabled'] = kwargs.get('enabled', True) and use_checkpoint
-        function = kwargs.pop('function', self.function)
-        inverse = kwargs.pop('inverse', self.inverse)
-        if kwargs.pop('reversed', self.reversed):
+        function, inverse = self.function, self.inverse
+        if self.reversed:
             function, inverse = inverse, function
         if not kwargs.pop('invertible', self.invertible):
             inverse = None
-        kwargs['function'], kwargs['inverse'] = function, inverse
-        return kwargs
+        outputs = checkpoint(function, *inputs, inverse=inverse, **kwargs)
+        return self.process_outputs(outputs)
+
+    def process_outputs(self, outputs):
+        """Process the outputs of `self.forward()`"""
+        return outputs
 
     @property
     def checkpoint(self):
@@ -168,12 +172,12 @@ class Module(nn.Module):
 class WrapperModule(Module):
     """Base wrapper invertible module"""
     # pylint: disable=abstract-method
-    wrapped_types = ()
+    wrapped_type = ()
 
     def __init__(self, module):
-        assert self.wrapped_types, 'define wrapped_types'
-        assert isinstance(module, self.wrapped_types), (
-            f'{type(module).__name__} is not in <{self.wrapped_types}>')
+        assert self.wrapped_type, 'define wrapped_type'
+        assert isinstance(module, self.wrapped_type), (
+            f'{type(module).__name__} is not in <{self.wrapped_type}>')
         super().__init__()
         self.module = module
 
@@ -186,10 +190,11 @@ class WrapperModule(Module):
 
 class Linear(WrapperModule):
     """Invertible linear module"""
-    wrapped_types = nn.Linear
+    wrapped_type = nn.Linear
 
-    def __init__(self, module):
-        super().__init__(module)
+    @functools.wraps(nn.Linear.__init__)
+    def __init__(self, *args, **kwargs):
+        super().__init__(nn.Linear(*args, **kwargs))
         assert self.in_features <= self.out_features, 'few out_features'
 
     @property
@@ -218,9 +223,9 @@ class Linear(WrapperModule):
         return inputs
 
 
-class Conv(WrapperModule):
+class _ConvNd(WrapperModule):
     """Invertible convolution"""
-    wrapped_types = (nn.Conv1d, nn.Conv2d, nn.Conv3d)
+    wrapped_type = nn.modules.conv._ConvNd  # pylint: disable=protected-access
 
     def __init__(self, module):
         super().__init__(module)
@@ -295,3 +300,30 @@ class Conv(WrapperModule):
         """Output and input shapes"""
         shape = self.weight.shape
         return shape[0] // self.groups, shape[1:].numel()
+
+
+class Conv1d(_ConvNd):
+    """Invertible 1D convolution"""
+    wrapped_type = nn.Conv1d
+
+    @functools.wraps(nn.Conv1d.__init__)
+    def __init__(self, *args, **kwargs):
+        super().__init__(nn.Conv1d(*args, **kwargs))
+
+
+class Conv2d(_ConvNd):
+    """Invertible 2D convolution"""
+    wrapped_type = nn.Conv2d
+
+    @functools.wraps(nn.Conv2d.__init__)
+    def __init__(self, *args, **kwargs):
+        super().__init__(nn.Conv2d(*args, **kwargs))
+
+
+class Conv3d(_ConvNd):
+    """Invertible 3D convolution"""
+    wrapped_type = nn.Conv3d
+
+    @functools.wraps(nn.Conv3d.__init__)
+    def __init__(self, *args, **kwargs):
+        super().__init__(nn.Conv3d(*args, **kwargs))
