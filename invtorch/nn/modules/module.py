@@ -24,7 +24,7 @@ class Module(nn.Module):
         self.seed = False  # preserve RNG state in backward
         self.checkpoint = True  # enables or disables checkpointing
         self.invertible = True  # use inverse if checkpointing is enabled
-        self.reversed = False  # switch function and inverse
+        self._reversed = False  # switch function and inverse
 
     def function(self, *inputs, strict_forward=False, saved=()):
         """Compute the outputs of the function given the inputs
@@ -62,7 +62,11 @@ class Module(nn.Module):
 
     def reverse(self, mode=None):
         """Switch function and inverse"""
-        self.reversed = not self.reversed if mode is None else mode
+        if not self.reversed if mode is None else mode:
+            assert self.reversible, 'module is not reversible'
+            self._reversed = True
+        else:
+            self._reversed = False
         return self
 
     def forward(self, *inputs, **kwargs):
@@ -73,13 +77,19 @@ class Module(nn.Module):
         kwargs['enabled'] = kwargs.get('enabled', True) and use_checkpoint
         if kwargs.pop('invertible', self.invertible):
             kwargs['inverse'] = self.call_inverse
-        outputs = pack(checkpoint(self.call_function, *inputs, **kwargs))
+        outputs = checkpoint(self.call_function, *inputs, **kwargs)
+        return self.process_outputs(*pack(outputs))
+
+    def process_outputs(self, *outputs):
+        """Get only `self.forward()` outputs"""
         if self.reversed:
             num_outputs = self.num_inverse_outputs
         else:
             num_outputs = self.num_function_outputs
         num_outputs = len(outputs) if num_outputs is None else num_outputs
         assert 0 < num_outputs <= len(outputs), f'need {num_outputs} outputs'
+        assert not requires_grad(any=outputs[num_outputs:]), (
+            'discarded outputs must not be differentiable')
         return outputs[0] if num_outputs == 1 else outputs[:num_outputs]
 
     @property
@@ -113,11 +123,7 @@ class Module(nn.Module):
 
     @reversed.setter
     def reversed(self, value):
-        if value:
-            assert self.reversible, 'module is not reversible'
-            self._reversed = True
-        else:
-            self._reversed = False
+        self.reverse(value)
 
     def check_function(self, *inputs):
         """Check if `self.call_function()` is consistent when strict_forward"""
