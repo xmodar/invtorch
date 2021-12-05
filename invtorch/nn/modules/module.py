@@ -89,7 +89,10 @@ class Module(nn.Module):
             num_outputs = self.num_inverse_outputs
         else:
             num_outputs = self.num_function_outputs
-        num_outputs = len(outputs) if num_outputs is None else num_outputs
+        if num_outputs is None:
+            num_outputs = 0
+        if num_outputs < 1:
+            num_outputs += len(outputs)
         assert 0 < num_outputs <= len(outputs), f'need {num_outputs} outputs'
         assert not requires_grad(any=outputs[num_outputs:]), (
             'discarded outputs must not be differentiable')
