@@ -16,6 +16,9 @@ class Module(nn.Module):
     Use this with great caution. Refer to the notes in `invtorch.checkpoint()`
     Source: https://github.com/xmodar/invtorch
     """
+    num_function_outputs = None
+    num_inverse_outputs = None
+
     def __init__(self):
         super().__init__()
         self.seed = False  # preserve RNG state in backward
@@ -62,27 +65,22 @@ class Module(nn.Module):
         self.reversed = not self.reversed if mode is None else mode
         return self
 
-    def process_inputs(self, inputs):
-        """Process the inputs to `self.forward()` as tuples"""
-        return inputs
-
     def forward(self, *inputs, **kwargs):
         """Perform the forward pass"""
-        inputs = self.process_inputs(inputs)
+        assert 'inverse' not in kwargs, 'Unknown keyword argument `inverse`'
         kwargs.setdefault('seed', self.seed)
         use_checkpoint = kwargs.pop('checkpoint', self.checkpoint)
         kwargs['enabled'] = kwargs.get('enabled', True) and use_checkpoint
-        function, inverse = self.function, self.inverse
+        if kwargs.pop('invertible', self.invertible):
+            kwargs['inverse'] = self.call_inverse
+        outputs = pack(checkpoint(self.call_function, *inputs, **kwargs))
         if self.reversed:
-            function, inverse = inverse, function
-        if not kwargs.pop('invertible', self.invertible):
-            inverse = None
-        outputs = checkpoint(function, *inputs, inverse=inverse, **kwargs)
-        return self.process_outputs(outputs)
-
-    def process_outputs(self, outputs):
-        """Process the outputs of `self.forward()`"""
-        return outputs
+            num_outputs = self.num_inverse_outputs
+        else:
+            num_outputs = self.num_function_outputs
+        num_outputs = len(outputs) if num_outputs is None else num_outputs
+        assert 0 < num_outputs <= len(outputs), f'need {num_outputs} outputs'
+        return outputs[0] if num_outputs == 1 else outputs[:num_outputs]
 
     @property
     def checkpoint(self):
@@ -135,7 +133,7 @@ class Module(nn.Module):
         assert not bad, f'Received: {grads2}\nExpected: {expected}'
         return True
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def check_inverse(self, *inputs, atol=1e-5, rtol=1e-3):
         """Check if `self.call_inverse()` computes correct input tensors"""
         outputs = pack(self.call_inverse(*pack(self.call_function(*inputs))))
