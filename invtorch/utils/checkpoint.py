@@ -152,16 +152,9 @@ class CheckpointFunction(torch.autograd.Function):
         assert isinstance(outputs, (torch.Tensor, tuple))
 
         # bookkeep differentiable tensors
-        ctx.grads, non_differentiable = [], []
-        for argument in pack(outputs):
-            does_require = False
-            if torch.is_tensor(argument):
-                if argument.requires_grad:
-                    does_require = True
-                else:
-                    non_differentiable.append(argument)
-            ctx.grads.append(does_require)
-        ctx.mark_non_differentiable(*non_differentiable)
+        ctx.grads = list(map(requires_grad, pack(outputs)))
+        tensors_grads = zip(map(torch.is_tensor, pack(outputs)), ctx.grads)
+        ctx.mark_non_differentiable(*(x for x, g in tensors_grads if not g))
         if not any(ctx.grads):
             return outputs  # apparently, `function` was not differentiable
 
@@ -201,8 +194,9 @@ class CheckpointFunction(torch.autograd.Function):
             with torch.inference_mode():
                 saved = set(range(len(ctx.grads))) - ctx.deallocated
                 inverted = pack(ctx.inverse(*pack(ctx.outputs), saved=saved))
-                for i in ctx.deallocated:
-                    tensors[i].set_(inverted[i])
+                for i, idx in enumerate(ctx.indices):
+                    if idx in ctx.deallocated:
+                        tensors[i].set_(inverted[idx])
             ctx.inverse = ctx.outputs = inverted = None
 
         # detach input tensors and run function again but in grad_mode
@@ -211,8 +205,8 @@ class CheckpointFunction(torch.autograd.Function):
             inputs[idx] = tensors[i].detach()
             inputs[idx].requires_grad_(tensors[i].requires_grad)
         inputs = [inputs[i] for i in range(len(inputs))]
-        with ctx.forked_rng:
-            with torch.enable_grad(), torch.cuda.amp.autocast(ctx.autocast):
+        with torch.enable_grad(), torch.cuda.amp.autocast(ctx.autocast):
+            with ctx.forked_rng:
                 outputs = pack(ctx.function(*inputs, strict_forward=False))
 
         # check if requires_grad matches that of strict_forward mode

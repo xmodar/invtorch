@@ -34,8 +34,7 @@ class DelayedRNGFork:
             self._fork.__enter__()  # pylint: disable=no-member
             torch.set_rng_state(self.cpu_state)
             for device, state in self.gpu_states.items():
-                with torch.cuda.device(device):
-                    torch.cuda.set_rng_state(state)
+                torch.cuda.set_rng_state(state, device)
 
     def __exit__(self, exc_type, exc_value, traceback):
         if self.enabled:
