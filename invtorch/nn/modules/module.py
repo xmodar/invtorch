@@ -1,5 +1,6 @@
 """Base Invertible Modules"""
 import itertools
+from contextlib import contextmanager
 
 import torch
 from torch import nn
@@ -71,12 +72,14 @@ class Module(nn.Module):
 
     def forward(self, *inputs, **kwargs):
         """Perform the forward pass"""
-        assert 'inverse' not in kwargs, 'Unknown keyword argument `inverse`'
-        kwargs.setdefault('seed', self.seed)
-        use_checkpoint = kwargs.pop('checkpoint', self.checkpoint)
-        kwargs['enabled'] = kwargs.get('enabled', True) and use_checkpoint
-        if kwargs.pop('invertible', self.invertible):
-            kwargs['inverse'] = self.call_inverse
+        private = {
+            'seed': self.seed,
+            'enabled': self.checkpoint,
+            'inverse': self.call_inverse if self.invertible else None,
+        }
+        assert all(k not in kwargs for k in private), 'got an illegal argument'
+        kwargs.setdefault('strict', True)
+        kwargs.update(private)
         outputs = checkpoint(self.call_function, *inputs, **kwargs)
         return self.process_outputs(*pack(outputs))
 
@@ -163,6 +166,19 @@ class Module(nn.Module):
         self.checkpoint = state['checkpoint']
         self.invertible = state['invertible']
         self.reversed = state['reversed']
+
+    @contextmanager
+    def temp_state(self, **kwargs):
+        """Set, temporarily, the extra state of the model"""
+        state = self.get_extra_state()
+        temp_state = state.copy()
+        temp_state.update(kwargs)
+        assert all(k in state for k in state), 'got an illegal argument'
+        try:
+            self.set_extra_state(temp_state)
+            yield self
+        finally:
+            self.set_extra_state(state)
 
     def extra_repr(self):
         extra = f'reversed={self.reversed}, checkpoint={self.checkpoint}'
