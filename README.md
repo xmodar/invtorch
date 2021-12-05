@@ -36,8 +36,6 @@ class InvertibleLinear(inn.Module):
         return outputs
 
     def inverse(self, outputs, saved=()):
-        if 0 in saved:
-            return None
         return (outputs - self.bias) @ self.weight.T.pinverse()
 ```
 
@@ -47,7 +45,7 @@ You can immediately notice few differences to the regular PyTorch module here. T
 
 ### Requires Gradient
 
-`function()` must manually call `.requires_grad_(True/False)` on all output tensors when `strict` is set to `True`. The forward pass is run in `no_grad` mode and there is no way to detect which output need gradients without tracing. It is possible to infer this from `requires_grad` values of the `inputs` and `self.parameters()`. The above code uses `invtorch.utils.require_grad(any=...)` which returns `True` if any input did require gradient. In `inverse()`, the keyword argument `saved` is passed. Which is the set of inputs positions that are already saved in memory and there is no need to compute them.
+`function()` must manually call `.requires_grad_(True/False)` on all output tensors when `strict` is set to `True`. The forward pass is run in `no_grad` mode and there is no way to detect which output need gradients without tracing. It is possible to infer this from `requires_grad` values of the `inputs` and `self.parameters()`. The above code uses `invtorch.utils.require_grad(any=...)` which returns `True` if any input did require gradient. In `inverse()`, the keyword argument `saved` is passed. Which is the set of inputs positions that are already saved in memory and there is no need to compute them. It can be completely ignored if the number of inputs to `function()` is one since `inverse()` will not be called unless needed.
 
 ### Example
 

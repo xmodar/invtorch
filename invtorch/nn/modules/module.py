@@ -17,9 +17,6 @@ class Module(nn.Module):
     Use this with great caution. Refer to the notes in `invtorch.checkpoint()`
     Source: https://github.com/xmodar/invtorch
     """
-    num_function_outputs = None
-    num_inverse_outputs = None
-
     def __init__(self):
         super().__init__()
         self.seed = False  # preserve RNG state in backward
@@ -55,6 +52,8 @@ class Module(nn.Module):
     def call_inverse(self):
         """Current inverse (according to `self.reversed`)"""
         return self.function if self.reversed else self.inverse
+
+    num_function_outputs = num_inverse_outputs = None
 
     @property
     def reversible(self):

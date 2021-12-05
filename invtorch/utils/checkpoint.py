@@ -190,9 +190,10 @@ class CheckpointFunction(torch.autograd.Function):
         # materialize any deallocated tensors by calling inverse
         tensors = ctx.saved_tensors
         if ctx.inverse is not None:
+            saved = set(range(len(ctx.grads))) - ctx.deallocated
+            kwargs = dict(saved=saved) if saved else {}
             with torch.inference_mode():
-                saved = set(range(len(ctx.grads))) - ctx.deallocated
-                inverted = pack(ctx.inverse(*pack(ctx.outputs), saved=saved))
+                inverted = pack(ctx.inverse(*pack(ctx.outputs), **kwargs))
                 for i, idx in enumerate(ctx.indices):
                     if idx in ctx.deallocated:
                         tensors[i].set_(inverted[idx])
