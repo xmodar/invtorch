@@ -16,7 +16,7 @@ class Identity(Module):
     def reversible(self):
         return True
 
-    def function(self, *inputs, strict_forward=False, saved=()):
+    def function(self, *inputs, strict=None, saved=()):
         # pylint: disable=unused-argument
         return inputs[0] if len(inputs) == 1 else inputs
 
@@ -40,17 +40,17 @@ class Linear(WrapperModule):
     def reversible(self):
         return self.in_features == self.out_features
 
-    def function(self, inputs, *, strict_forward=False, saved=()):
+    def function(self, inputs, *, strict=None, saved=()):
         """Compute the outputs of the function"""
         # pylint: disable=arguments-differ
         if 0 in saved:
             return None
         outputs = F.linear(inputs, self.weight, self.bias)
-        if strict_forward:
+        if strict:
             requires_grad(outputs, any=(inputs, self.weight, self.bias))
         return outputs
 
-    def inverse(self, outputs, *, strict_forward=False, saved=()):
+    def inverse(self, outputs, *, strict=None, saved=()):
         """Compute the inputs of the function"""
         # pylint: disable=arguments-differ
         if 0 in saved:
@@ -58,6 +58,6 @@ class Linear(WrapperModule):
         if self.bias is not None:
             outputs = outputs - self.bias
         inputs = F.linear(outputs, self.weight.pinverse())
-        if strict_forward:
+        if strict:
             requires_grad(inputs, any=(outputs, self.weight, self.bias))
         return inputs

@@ -29,9 +29,9 @@ class InvertibleLinear(inn.Module):
         self.weight = nn.Parameter(torch.randn(out_features, in_features))
         self.bias = nn.Parameter(torch.randn(out_features))
 
-    def function(self, inputs, strict_forward=False):
+    def function(self, inputs, strict=None):
         outputs = inputs @ self.weight.T + self.bias
-        if strict_forward:
+        if strict:
             requires_grad(outputs, any=(inputs, self.weight, self.bias))
         return outputs
 
@@ -43,11 +43,11 @@ class InvertibleLinear(inn.Module):
 
 ### Structure
 
-You can immediately notice few differences to the regular PyTorch module here. There is no longer a need to define `forward()`. Instead, it is replaced with `function(*inputs, strict_forward=False)`. Additionally, it is necessary to define its inverse function as `inverse(*outputs, saved=())`. Both methods can only take one or more positional arguments and return a `torch.Tensor` or a `tuple` of outputs which can have anything including tensors.
+You can immediately notice few differences to the regular PyTorch module here. There is no longer a need to define `forward()`. Instead, it is replaced with `function(*inputs, strict=None)`. Additionally, it is necessary to define its inverse function as `inverse(*outputs, saved=())`. Both methods can only take one or more positional arguments and return a `torch.Tensor` or a `tuple` of outputs which can have anything including tensors.
 
 ### Requires Gradient
 
-`function()` must manually call `.requires_grad_(True/False)` on all output tensors when `strict_forward` is set to `True`. The forward pass is run in `no_grad` mode and there is no way to detect which output need gradients without tracing. It is possible to infer this from `requires_grad` values of the `inputs` and `self.parameters()`. The above code uses `invtorch.utils.require_grad(any=...)` which returns `True` if any input did require gradient. In `inverse()`, the keyword argument `saved` is passed. Which is the set of inputs positions that are already saved in memory and there is no need to compute them.
+`function()` must manually call `.requires_grad_(True/False)` on all output tensors when `strict` is set to `True`. The forward pass is run in `no_grad` mode and there is no way to detect which output need gradients without tracing. It is possible to infer this from `requires_grad` values of the `inputs` and `self.parameters()`. The above code uses `invtorch.utils.require_grad(any=...)` which returns `True` if any input did require gradient. In `inverse()`, the keyword argument `saved` is passed. Which is the set of inputs positions that are already saved in memory and there is no need to compute them.
 
 ### Example
 
@@ -56,7 +56,7 @@ Now, this model is ready to be instantiated and used directly.
 ```python
 x = torch.randn(10, 3)
 model = InvertibleLinear(3, 5)
-print('Consistent strict_forward:', model.check_function(x))
+print('Consistent strict:', model.check_function(x))
 print('Is invertible:', model.check_inverse(x))
 
 y = model(x)

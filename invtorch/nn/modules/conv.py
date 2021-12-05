@@ -26,7 +26,7 @@ class _ConvNd(WrapperModule):
         outputs, inputs = self.flat_weight_shape
         return inputs == outputs, f'out_channels/groups={outputs} != {inputs}'
 
-    def function(self, inputs, *, strict_forward=False, saved=()):
+    def function(self, inputs, *, strict=None, saved=()):
         # pylint: disable=arguments-differ
         if 0 in saved:
             return None
@@ -34,11 +34,11 @@ class _ConvNd(WrapperModule):
         input_padding = self.get_input_padding(inputs.shape)
         assert sum(input_padding) == 0, f'inputs need padding: {inputs.shape}'
         outputs = self.module.forward(inputs)
-        if strict_forward:
+        if strict:
             requires_grad(outputs, any=(inputs, self.weight, self.bias))
         return outputs
 
-    def inverse(self, outputs, *, strict_forward=False, saved=()):
+    def inverse(self, outputs, *, strict=None, saved=()):
         # pylint: disable=arguments-differ
         if 0 in saved:
             return None
@@ -60,7 +60,7 @@ class _ConvNd(WrapperModule):
         overlaps = self.conv_transpose(outputs, overlaps_weight)
         inputs = inputs.div_(overlaps)
 
-        if strict_forward:
+        if strict:
             requires_grad(inputs, any=(old_outputs, self.weight, self.bias))
         return inputs
 

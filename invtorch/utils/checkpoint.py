@@ -34,31 +34,31 @@ def checkpoint(
     """Same as `torch.utils.checkpoint.checkpoint` with extra functionalities
 
     The original checkpoint needs at least one input with `requires_grad` set
-    to `True` to work. This is fine as long as the `function` doesn't have any
-    tensors that require gradients. In such case, no gradients will be computed
-    and PyTorch will raise a UserWarning. The checkpoint will be disabled and
-    the code will run in `torch.no_grad()` mode.
+    to `True` to work. This is fine if `function` doesn't output tensors that
+    require gradients due to some hidden parameters with `requires_grad=True`.
+    In such case, a UserWarning will be raised and the code will run as if it
+    was run in `torch.no_grad()` mode.
 
-    Moreover, by default all output tensors will have `requires_grad` set
-    to `True` even if they shouldn't. This is because, in the forward pass,
-    the `function` will be called in `no_grad` mode and it is difficult to
-    cheaply keep track of which output will require gradient beforehand.
+    Moreover, by default all output tensors will have `requires_grad=True` even
+    if they shouldn't. This is because, in the forward pass, `function` will be
+    called in `no_grad` mode and it is difficult to cheaply keep track of which
+    output will require gradients beforehand.
     Refer to https://pytorch.org/docs/1.10.0/checkpoint.html for more details.
 
     Instead, this function has two new flags; `strict` and `enabled`.
-    Setting `enabled` to `False`, will disable all checkpointing logic. Else,
-    when `strict` is set to `False`, it will use the original checkpoint as is.
-    Running in `strict` mode incurs two main changes to the original behavior:
+    Setting `enabled` to `False`, will disable all checkpointing logic.
+    However, when `strict=False`, it will use the original checkpoint as is.
+    Else, when `strict=True`, the original behavior will change in two ways:
         (1) When no input tensor requires gradient but `function` generates
             outputs that do require gradients, the checkpoint will still work
         (2) All outputs will have `requires_grad` set to `False` by default.
             To specify what tensors actually require gradients, `function` will
-            expect a keyword argument `strict_forward` which will be `True` if
-            we cannot automatically track this information. Here is an example:
+            expect a keyword argument `strict` which will be `True` if we
+            cannot automatically track this information. Here is an example:
     ```python
-    def function(x, y, strict_forward=False):
+    def function(x, y, strict=None):
         z = x + y
-        if strict_forward:  # set requires_grad for all outputs
+        if strict:  # set requires_grad for all outputs
             z.requires_grad = x.requires_grad or y.requires_grad
             # no need to set for y as it is already set
         return z, y
@@ -68,14 +68,13 @@ def checkpoint(
 
     In addition, this function allows a more extreme version of checkpointing.
     If `function` was invertible with respect to its input tensors, then we can
-    deallocate them as well and recover them using `inverse`. It should be a
-    function that takes all output arguments of `function` and returns all the
-    computed inputs. In general, `inverse` doesn't need to be differentiable
-    and it will run in `torch.inference_mode()` with `strict_forward=True`.
-    It shouldn't have side effects and must not modify the outputs (its inputs)
-    in-place in most cases. It only needs to compute the input tensors and can
-    return anything for non-tensor inputs but it is a good practice to return
-    them to allow for nesting invertible functions.
+    deallocate and recover them later using `inverse`. It should be a function
+    that takes `function`'s outputs and returns computed `function`'s inputs.
+    In general, `inverse` doesn't need to be differentiable and it'll run in
+    `torch.inference_mode()`. It shouldn't have side effects and mustn't modify
+    the outputs (its inputs) in-place in most cases. It only needs to compute
+    the input tensors and can return anything for non-tensor inputs but it is
+    a good practice to return them to allow for nesting invertible functions.
 
     For more granular control, it also expects an additional keyword argument
     `saved` which is the set of the positions of the inputs that are in memory.
@@ -148,7 +147,7 @@ class CheckpointFunction(torch.autograd.Function):
         ctx.autocast = torch.is_autocast_enabled()
         devices = (x.device for x in args if torch.is_tensor(x) and x.is_cuda)
         ctx.forked_rng = DelayedRNGFork(devices, seed)
-        outputs = function(*args, strict_forward=True)
+        outputs = function(*args, strict=True)
         assert isinstance(outputs, (torch.Tensor, tuple))
 
         # bookkeep differentiable tensors
@@ -207,9 +206,9 @@ class CheckpointFunction(torch.autograd.Function):
         inputs = [inputs[i] for i in range(len(inputs))]
         with torch.enable_grad(), torch.cuda.amp.autocast(ctx.autocast):
             with ctx.forked_rng:
-                outputs = pack(ctx.function(*inputs, strict_forward=False))
+                outputs = pack(ctx.function(*inputs, strict=False))
 
-        # check if requires_grad matches that of strict_forward mode
+        # check if requires_grad matches that of function call in forward
         current = map(requires_grad, outputs)
         bad = {i for i, (g, c) in enumerate(zip(ctx.grads, current)) if g != c}
         if bad:

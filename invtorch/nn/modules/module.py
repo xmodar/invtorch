@@ -27,13 +27,13 @@ class Module(nn.Module):
         self.invertible = True  # use inverse if checkpointing is enabled
         self._reversed = False  # switch function and inverse
 
-    def function(self, *inputs, strict_forward=False, saved=()):
+    def function(self, *inputs, strict=None, saved=()):
         """Compute the outputs of the function given the inputs
 
         The first run of function will be in no_grad mode. Therefore, you must
         manually call `.requires_grad_(True/False)` for all output tensors when
-        `strict_forward` is set to `True`. Infer the values from requires_grad
-        of `inputs` and all used parameters. You should handle all possible
+        `strict` is set to `True`. Infer the values from requires_grad of
+        `inputs` and all used parameters. You should handle all possible
         combinations or you will get some errors in backward. You can verify
         your implementation by simply calling `self.check_function()`.
         """
@@ -44,7 +44,7 @@ class Module(nn.Module):
         """Current function (according to `self.reversed`)"""
         return self.inverse if self.reversed else self.function
 
-    def inverse(self, *outputs, strict_forward=False, saved=()):
+    def inverse(self, *outputs, strict=None, saved=()):
         """Compute the inputs of the function given the outputs
 
         Verify your implementation by calling `self.check_inverse()`.
@@ -129,11 +129,11 @@ class Module(nn.Module):
         self.reverse(value)
 
     def check_function(self, *inputs):
-        """Check if `self.call_function()` is consistent when strict_forward"""
+        """Check if `self.call_function()` is consistent when strict"""
         with torch.enable_grad():
-            outputs1 = pack(self.call_function(*inputs, strict_forward=False))
+            outputs1 = pack(self.call_function(*inputs, strict=False))
         with torch.no_grad():
-            outputs2 = pack(self.call_function(*inputs, strict_forward=True))
+            outputs2 = pack(self.call_function(*inputs, strict=True))
         assert len(outputs2) == len(outputs1), 'number of outputs'
         grads1 = list(map(requires_grad, outputs1))
         grads2 = list(map(requires_grad, outputs2))
