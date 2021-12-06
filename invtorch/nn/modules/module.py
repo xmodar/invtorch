@@ -93,8 +93,8 @@ class Module(nn.Module):
         """Get only `self.forward()` outputs"""
         num_outputs = self.num_outputs
         if num_outputs is None:
-            num_outputs = 0
-        if num_outputs < 1:
+            num_outputs = len(outputs)
+        elif num_outputs < 0:
             num_outputs += len(outputs)
         assert 0 < num_outputs <= len(outputs), f'need {num_outputs} outputs'
         assert not requires_grad(any=outputs[num_outputs:]), (
@@ -135,11 +135,13 @@ class Module(nn.Module):
         self.reverse(value)
 
     def check_function(self, *inputs):
-        """Check if `self.call_function()` is consistent when strict"""
+        """Check if `self.call_function()` is consistent when `strict=True`"""
         with torch.enable_grad():
             outputs1 = pack(self.call_function(*inputs, strict=False))
+            outputs1 = pack(self.process_outputs(*outputs1))
         with torch.no_grad():
             outputs2 = pack(self.call_function(*inputs, strict=True))
+            outputs2 = pack(self.process_outputs(*outputs2))
         assert len(outputs2) == len(outputs1), 'number of outputs'
         grads1 = list(map(requires_grad, outputs1))
         grads2 = list(map(requires_grad, outputs2))
@@ -151,7 +153,8 @@ class Module(nn.Module):
     @torch.no_grad()
     def check_inverse(self, *inputs, atol=1e-5, rtol=1e-3):
         """Check if `self.call_inverse()` computes correct input tensors"""
-        outputs = pack(self.call_inverse(*pack(self.call_function(*inputs))))
+        outputs = pack(self.call_function(*inputs, strict=True))
+        outputs = pack(self.call_inverse(*outputs))
         for inputs, outputs in itertools.zip_longest(inputs, outputs):
             is_tensor = torch.is_tensor(inputs)
             assert is_tensor == torch.is_tensor(outputs), 'out types mismatch'

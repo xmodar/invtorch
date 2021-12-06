@@ -17,13 +17,12 @@ class Sequential(WrapperModule):
     def function(self, *inputs, strict=None):
         # pylint: disable=arguments-differ
         extras, counts = [], []
-        save_extras = strict and self.invertible
         for layer in self.module:
             outputs = pack(layer.call_function(*inputs, strict=strict))
             inputs = pack(layer.process_outputs(*outputs))
-            counts.append(len(outputs) - len(inputs) if save_extras else 0)
-            if save_extras:
-                extras.extend(outputs[:-counts[-1]])
+            counts.append(len(outputs) - len(inputs) if strict else 0)
+            if strict:
+                extras.extend(outputs[len(inputs):])
         return (*inputs, *extras, counts)
 
     def inverse(self, *outputs, saved=()):
@@ -39,7 +38,7 @@ class Sequential(WrapperModule):
             if not extras and saved:
                 kwargs['saved'] = saved
             outputs = pack(layer.call_inverse(*outputs, **kwargs))
-        return outputs
+        return outputs[0] if len(outputs) == 1 else outputs
 
     def process_outputs(self, *outputs):
         return super().process_outputs(*outputs[:-sum(outputs[-1]) - 1])
