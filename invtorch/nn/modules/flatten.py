@@ -22,7 +22,7 @@ class Flatten(Module):
             end_dim += 1
         unflattened_size = inputs.shape[self.start_dim:end_dim]
         if self.unflattened_size is not None:
-            assert self.unflattened_size == unflattened_size, 'size mismatch'
+            assert tuple(self.unflattened_size) == unflattened_size, 'mismatch'
         outputs = inputs.flatten(self.start_dim, self.end_dim)
         if strict:
             outputs.requires_grad_(inputs.requires_grad)

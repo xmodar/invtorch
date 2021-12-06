@@ -25,15 +25,7 @@ class Module(nn.Module):
         self._reversed = False  # switch function and inverse
 
     def function(self, *inputs, strict=None, saved=()):
-        """Compute the outputs of the function given the inputs
-
-        The first run of function will be in no_grad mode. Therefore, you must
-        manually call `.requires_grad_(True/False)` for all output tensors when
-        `strict` is set to `True`. Infer the values from requires_grad of
-        `inputs` and all used parameters. You should handle all possible
-        combinations or you will get some errors in backward. You can verify
-        your implementation by simply calling `self.check_function()`.
-        """
+        """Compute the outputs of the function given the inputs"""
         raise NotImplementedError
 
     @property
@@ -42,10 +34,7 @@ class Module(nn.Module):
         return self.inverse if self.reversed else self.function
 
     def inverse(self, *outputs, strict=None, saved=()):
-        """Compute the inputs of the function given the outputs
-
-        Verify your implementation by calling `self.check_inverse()`.
-        """
+        """Compute the inputs of the function given the outputs"""
         raise NotImplementedError
 
     @property
@@ -177,17 +166,24 @@ class Module(nn.Module):
         self.reversed = state['reversed']
 
     @contextmanager
-    def temp_state(self, **kwargs):
-        """Set, temporarily, the extra state of the model"""
-        state = self.get_extra_state()
-        temp_state = state.copy()
-        temp_state.update(kwargs)
-        assert all(k in state for k in state), 'got an illegal argument'
+    def temp_mode(self, **kwargs):
+        """Set, temporarily, the mode of the model"""
+        state = {}
+        for key in ('seed', 'checkpoint', 'invertible', 'reversed'):
+            state[key] = getattr(self, key)
+            if key in kwargs and state[key] == bool(kwargs[key]):
+                kwargs.pop(key)
+        assert all(k in state for k in kwargs), 'got an illegal argument'
+        if 'checkpoint' in kwargs and 'invertible' in kwargs:
+            assert kwargs['checkpoint'] or not kwargs['invertible'], (
+                'set either `checkpoint` or `invertible` or avoid conflict')
         try:
-            self.set_extra_state(temp_state)
+            for key, value in kwargs.items():
+                setattr(self, key, value)
             yield self
         finally:
-            self.set_extra_state(state)
+            for key, value in state.items():
+                setattr(self, key, value)
 
     def extra_repr(self):
         extra = f'reversed={self.reversed}, checkpoint={self.checkpoint}'
