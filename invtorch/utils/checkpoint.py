@@ -152,8 +152,8 @@ class CheckpointFunction(torch.autograd.Function):
 
         # bookkeep differentiable tensors
         ctx.grads = list(map(requires_grad, pack(outputs)))
-        tensors_grads = zip(map(torch.is_tensor, pack(outputs)), ctx.grads)
-        ctx.mark_non_differentiable(*(x for x, g in tensors_grads if not g))
+        no_grads = (x for x, g in zip(pack(outputs), ctx.grads) if not g)
+        ctx.mark_non_differentiable(*filter(torch.is_tensor, no_grads))
         if not any(ctx.grads):
             return outputs  # apparently, `function` was not differentiable
 
@@ -190,7 +190,7 @@ class CheckpointFunction(torch.autograd.Function):
         # materialize any deallocated tensors by calling inverse
         tensors = ctx.saved_tensors
         if ctx.inverse is not None:
-            saved = set(range(len(ctx.grads))) - ctx.deallocated
+            saved = set(ctx.indices) - ctx.deallocated
             kwargs = dict(saved=saved) if saved else {}
             with torch.inference_mode():
                 inverted = pack(ctx.inverse(*pack(ctx.outputs), **kwargs))

@@ -56,6 +56,13 @@ class Module(nn.Module):
     num_function_outputs = num_inverse_outputs = None
 
     @property
+    def num_outputs(self):
+        """Current number of outputs (according to `self.reversed`)"""
+        if self.reversed:
+            return self.num_inverse_outputs
+        return self.num_function_outputs
+
+    @property
     def reversible(self):
         """Whether function and inverse can be switched"""
         return False
@@ -84,10 +91,7 @@ class Module(nn.Module):
 
     def process_outputs(self, *outputs):
         """Get only `self.forward()` outputs"""
-        if self.reversed:
-            num_outputs = self.num_inverse_outputs
-        else:
-            num_outputs = self.num_function_outputs
+        num_outputs = self.num_outputs
         if num_outputs is None:
             num_outputs = 0
         if num_outputs < 1:
