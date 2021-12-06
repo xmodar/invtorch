@@ -9,3 +9,5 @@ Sources:
 """
 from . import nn, random, utils
 from .utils.checkpoint import checkpoint
+
+__version__ = '0.3.0'
