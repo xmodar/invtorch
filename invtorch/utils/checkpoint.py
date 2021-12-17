@@ -56,93 +56,70 @@ class CheckpointFunction(torch.autograd.Function):
     # pylint: disable=abstract-method, arguments-differ, protected-access
     @classmethod
     def apply(cls, function, inverse, keep, seed, enabled, /, *args, **kwargs):
-        """Same as `torch.utils.checkpoint.checkpoint` with extra functionalities
+        """Improved `torch.utils.checkpoint.checkpoint`
 
-        The original checkpoint needs at least one input with `requires_grad` set
-        to `True` to work. This is fine if `function` doesn't output tensors that
-        require gradients due to some hidden parameters with `requires_grad=True`.
-        In such case, a UserWarning will be raised and the code will run as if it
-        was run in `torch.no_grad()` mode.
+        The original checkpoint cannot track which tensors `requires_grad`.
+        See https://pytorch.org/docs/1.10.0/checkpoint.html for more details.
 
-        Moreover, by default all output tensors will have `requires_grad=True` even
-        if they shouldn't. This is because, in the forward pass, `function` will be
-        called in `no_grad` mode and it is difficult to cheaply keep track of which
-        output will require gradients beforehand.
-        Refer to https://pytorch.org/docs/1.10.0/checkpoint.html for more details.
+        Instead, this checkpoint doesn't have this issue and it also supports
+        invertible functions which will allow deallocating some input tensors,
+        to save more memory, that will be recomputed in the backward pass.
 
-        Instead, this function has two new flags; `strict` and `enabled`.
-        Setting `enabled` to `False`, will disable all checkpointing logic.
-        However, when `strict=False`, it will use the original checkpoint as is.
-        Else, when `strict=True`, the original behavior will change in two ways:
-            (1) When no input tensor requires gradient but `function` generates
-                outputs that do require gradients, the checkpoint will still work
-            (2) All outputs will have `requires_grad` set to `False` by default.
-                To specify what tensors actually require gradients, `function` will
-                expect a keyword argument `strict` which will be `True` if we
-                cannot automatically track this information. Here is an example:
+        Example of a function and its inverse and their structure. Notice, how
+        they both need to accept an optional keyword argument `cache`:
         ```python
-        def function(x, y, strict=None):
-            z = x + y
-            if strict:  # set requires_grad for all outputs
-                z.requires_grad = x.requires_grad or y.requires_grad
-                # no need to set for y as it is already set
-            return z, y
+        def function(x, constant=2, cache=None):
+            assert constant != 0, 'not invertible if `constant` is zero'
+            if cache:  # save needed values for the inverse function
+                cache['constant'] = constant
+            return x * constant
+
+
+        def inverse(x, constant=2, cache=None):
+            return x / constant
+
+
+        # the cache is used to pass keyword arguments to inverse
+        # make sure to always detach any tensor in the cache
+        cache = {}
+        y = function(x, 5, cache)
+        x = inverse(x, **cache)
         ```
-            Debug your code carefully and try to cover all the cases. Don't
-            forget to account for any used parameters that requires_grad.
 
-        In addition, this function allows a more extreme version of checkpointing.
-        If `function` was invertible with respect to its input tensors, then we can
-        deallocate and recover them later using `inverse`. It should be a function
-        that takes `function`'s outputs and returns computed `function`'s inputs.
-        In general, `inverse` doesn't need to be differentiable and it'll run in
-        `torch.inference_mode()`. It shouldn't have side effects and mustn't modify
-        the outputs (its inputs) in-place in most cases. It only needs to compute
-        the input tensors and can return anything for non-tensor inputs but it is
-        a good practice to return them to allow for nesting invertible functions.
+        When using this checkpoint with invertible inputs, `function` will be
+        called once in the forward pass with `cache[':mode'] == 'forward'`.
+        Then, later in the backward pass, `inverse` is called followed by a
+        call to `function` again with `cache[':mode'] == 'backward'`.
 
-        For more granular control, it also expects an additional keyword argument
-        `saved` which is the set of the positions of the inputs that are in memory.
-        Here is the inverse of the previous example:
-        ```python
-        def inverse(z, y, saved=()):
-            x = z - y if 0 in saved else None
-            return x, y
-        ```
-        You might notice that `1` (for `y`) will always be in `saved` since it is
-        an output of `function` and might be used in later operations. This was
-        detected automatically by checking if any output share the same memory with
-        an input. To manually select tensors to keep in memory, you can pass them
-        to the `keep` argument as a tuple of tensors that are in the input already.
-
-        There are few caveats to consider though. Invertible functions are hard to
-        define without requiring more memory. Moreover, they are prone to numerical
-        instabilities (e.g., multiplying by numbers close to zero). Even if we can
-        get away with these fundamental problems, there are technical details to
-        consider here. There is no way of guarding against accessing the data in
-        the input tensors after calling the function and before the backward pass.
-        It is up to the user to ensure this. Otherwise, it is possible to run into
-        illegal memory access errors. Think of residual connections as an example.
-        In `x + f(x)`, assuming `f` is an invertible checkpoint, `x` will be freed
-        from memory before the sum is computed. On the other hand, we can maybe
-        use `x.clone() + f(x)` (not `f(x) + x.clone()`!) but now we have a copy of
-        `x` in memory. It is recommended to encapsulate this inside `f` itself or
-        use the simple checkpoint instead. Other alternatives exists and you should
-        study your case carefully before deciding to use this. Fore instance, check
-        out `torch.autograd.graph.saved_tensors_hooks()` and `graph.save_on_cpu()`.
-        Source: https://github.com/xmodar/invtorch
+        There are few caveats to consider though. Invertible functions are hard
+        to define without requiring more memory. Moreover, they are prone to
+        numerical instabilities (e.g., multiplying by numbers close to zero).
+        Even if we can get away with these fundamental problems, there are
+        technical details to consider here. There is no way of guarding against
+        accessing the data in the input tensors after calling the function and
+        before the backward pass. It is up to the user to ensure this.
+        Otherwise, it is possible to run into illegal memory access errors.
+        Think of residual connections as an example. In `x + f(x)`, assuming
+        `f` is an invertible checkpoint, `x` will be freed from memory before
+        the sum is computed. On the other hand, we can maybe use
+        `x.clone() + f(x)` (not `f(x) + x.clone()`!) but now we have a copy of
+        `x` in memory. It is recommended to encapsulate this inside `f` itself
+        or use the simple checkpoint instead. Other alternatives exists and you
+        should study your case carefully before deciding to use this. For
+        instance, check out `torch.autograd.graph.saved_tensors_hooks()` and
+        `graph.save_on_cpu()`. Source: https://github.com/xmodar/invtorch
 
         Args:
-            function: this is any forward function with positional arguments
-            *inputs: input arguments tuple to be passed to `function`
-            seed: same as preserve_rng_state; preserves the random number generator
-            strict: `requires_grad` for outputs is set manually in `function`
-            enabled: disables checkpointing if set to False
-            inverse: inverse of `function` to deallocate the inputs as well
+            function: any forward function with `cache` argument
+            inverse: inverse of `function` with `cache` argument
             keep: set of input tensors to keep in memory during inverse mode
+            seed: same as preserve_rng_state; preserves random number generator
+            enabled: disables checkpointing if set to False
+            *args: input arguments `tuple` to be passed to `function`
+            *kwargs: input keyword arguments `dict` to be passed to `function`
 
         Returns:
-            Outputs of `function(*inputs)` with checkpointing if required
+            Outputs of `function` with checkpointing if required
         """
         if not enabled or in_dry_mode() or not torch.is_grad_enabled():
             return function(*args, **kwargs)
