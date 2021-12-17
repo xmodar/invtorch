@@ -4,7 +4,6 @@ import functools
 from torch import nn
 from torch.nn import functional as F
 
-from ...utils.tools import requires_grad
 from .module import Module, WrapperModule
 
 __all__ = ['Identity', 'Linear']
@@ -14,8 +13,8 @@ class Identity(Module):
     """Identity function"""
     reversible = True
 
-    def forward(self, *inputs, **kwargs):
-        return inputs[0] if len(inputs) == 1 else inputs
+    def forward(self, *args, **kwargs):
+        return args[0] if len(args) == 1 else args
 
     function = inverse = call_function = call_inverse = forward
 
@@ -33,20 +32,14 @@ class Linear(WrapperModule):
     def reversible(self):
         return self.in_features == self.out_features
 
-    def function(self, inputs, *, strict=None):
+    def function(self, inputs, cache=None):
         """Compute the outputs of the function"""
-        # pylint: disable=arguments-differ
-        outputs = F.linear(inputs, self.weight, self.bias)
-        if strict:
-            requires_grad(outputs, any=(inputs, self.weight, self.bias))
-        return outputs
+        # pylint: disable=arguments-differ, unused-argument
+        return self.module.forward(inputs)
 
-    def inverse(self, outputs, *, strict=None):
+    def inverse(self, outputs, cache=None):
         """Compute the inputs of the function"""
-        # pylint: disable=arguments-differ
+        # pylint: disable=arguments-differ, unused-argument
         if self.bias is not None:
             outputs = outputs - self.bias
-        inputs = F.linear(outputs, self.weight.pinverse())
-        if strict:
-            requires_grad(inputs, any=(outputs, self.weight, self.bias))
-        return inputs
+        return F.linear(outputs, self.weight.pinverse())

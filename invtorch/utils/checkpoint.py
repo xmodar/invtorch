@@ -70,7 +70,7 @@ class CheckpointFunction(torch.autograd.Function):
         ```python
         def function(x, constant=2, cache=None):
             assert constant != 0, 'not invertible if `constant` is zero'
-            if cache:  # save needed values for the inverse function
+            if cache is not None:  # save needed values for the inverse
                 cache['constant'] = constant
             return x * constant
 

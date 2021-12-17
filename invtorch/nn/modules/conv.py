@@ -5,7 +5,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from ...utils.tools import requires_grad
 from .module import WrapperModule
 
 __all__ = ['Conv1d', 'Conv2d', 'Conv3d']
@@ -26,19 +25,15 @@ class _ConvNd(WrapperModule):
         outputs, inputs = self.flat_weight_shape
         return inputs == outputs, f'out_channels/groups={outputs} != {inputs}'
 
-    def function(self, inputs, *, strict=None):
-        # pylint: disable=arguments-differ
+    def function(self, inputs, cache=None):
+        # pylint: disable=arguments-differ, unused-argument
         # TODO: make input padding an opt-in feature
         input_padding = self.get_input_padding(inputs.shape)
         assert sum(input_padding) == 0, f'inputs need padding: {inputs.shape}'
-        outputs = self.module.forward(inputs)
-        if strict:
-            requires_grad(outputs, any=(inputs, self.weight, self.bias))
-        return outputs
+        return self.module.forward(inputs)
 
-    def inverse(self, outputs, *, strict=None):
-        # pylint: disable=arguments-differ
-        old_outputs = outputs
+    def inverse(self, outputs, cache=None):
+        # pylint: disable=arguments-differ, unused-argument
         if self.bias is not None:
             outputs = outputs - self.bias.view(-1, *[1] * self.dim)
 
@@ -54,11 +49,7 @@ class _ConvNd(WrapperModule):
         outputs = (one / factor).expand(1, *outputs.shape[1:])
         overlaps_weight = one.expand(self.out_channels, 1, *self.kernel_size)
         overlaps = self.conv_transpose(outputs, overlaps_weight)
-        inputs = inputs.div_(overlaps)
-
-        if strict:
-            requires_grad(inputs, any=(old_outputs, self.weight, self.bias))
-        return inputs
+        return inputs.div_(overlaps)
 
     def get_input_padding(self, input_size):
         """Get the input padding given the input size"""

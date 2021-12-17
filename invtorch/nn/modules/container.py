@@ -14,34 +14,22 @@ class Sequential(WrapperModule):
     def __init__(self, *modules):
         super().__init__(nn.Sequential(*modules))
 
-    def function(self, *inputs, strict=None):
-        # pylint: disable=arguments-differ
-        extras, counts = [], []
+    def function(self, *args, **kwargs):
+        out_cache = kwargs.pop('cache', {})
+        out_cache['kwargs'] = []
         for layer in self.module:
-            outputs = pack(layer.call_function(*inputs, strict=strict))
-            inputs = pack(layer.process_outputs(*outputs))
-            counts.append(len(outputs) - len(inputs) if strict else 0)
-            if strict:
-                extras.extend(outputs[len(inputs):])
-        return (*inputs, *extras, counts)
+            cache = {}
+            args = layer.call_function(*pack(args), **kwargs, cache=cache)
+            out_cache['kwargs'].append(cache)
+            kwargs = {}
+        return args
 
-    def inverse(self, *outputs, saved=()):
-        # pylint: disable=arguments-differ
-        extras, end = [()] * len(outputs[-1]), -1
-        for i, count in enumerate(reversed(outputs[end]), 1):
-            extras[-i] = outputs[end - count:end]
-            end -= count
-        outputs = outputs[:end]
-        kwargs = {}
-        for layer in reversed(self.module):
-            outputs = outputs + extras.pop()
-            if not extras and saved:
-                kwargs['saved'] = saved
-            outputs = pack(layer.call_inverse(*outputs, **kwargs))
-        return outputs[0] if len(outputs) == 1 else outputs
-
-    def process_outputs(self, *outputs):
-        return super().process_outputs(*outputs[:-sum(outputs[-1]) - 1])
+    def inverse(self, *args, kwargs=None, cache=None):
+        # pylint: disable=arguments-differ, unused-argument
+        for i, layer in enumerate(reversed(self.module), 1):
+            rest = {} if kwargs is None else kwargs[-i]
+            args = layer.call_inverse(*pack(args), **rest)
+        return args
 
     call_function, call_inverse = function, inverse
 
