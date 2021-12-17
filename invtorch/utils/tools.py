@@ -23,5 +23,4 @@ def requires_grad(inputs=None, *, any=None, all=None):
         if inputs is not None:
             inputs.requires_grad_(requires)
         return requires
-    assert inputs is not None, 'You have to pass inputs'
     return torch.is_tensor(inputs) and inputs.requires_grad

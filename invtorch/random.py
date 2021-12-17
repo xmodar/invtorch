@@ -47,3 +47,11 @@ class DelayedRNGFork:
     def enabled(self):
         """Whether the fork is enabled"""
         return self.cpu_state is not None
+
+    @classmethod
+    def from_tensors(cls, *args, enabled=True):
+        """Get delayed RNG fork from input tensors"""
+        if len(args) == 1 and isinstance(args[0], tuple):
+            args = args[0]
+        devices = (x.device for x in args if torch.is_tensor(x) and x.is_cuda)
+        return cls(devices, enabled)
