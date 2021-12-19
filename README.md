@@ -1,8 +1,8 @@
 # InvTorch: Memory-Efficient Invertible Functions
 
-When working with extremely deep neural networks, memory becomes an immediate concern. It will be filled with [saved tensors](https://pytorch.org/docs/1.10.0/notes/autograd.html#:~:text=Saved%20tensors) that are needed for gradient computation. PyTorch provides a solution, `torch.utils.checkpoint.checkpoint_sequential`, that allows us to segment every $N$ layers as a checkpoint. Such that, the forward pass is run in `no_grad` mode. Meanwhile, the inputs of every segment is saved in memory. Every other unreferenced tensor gets deallocated. In the backward pass, the forward pass of every segment, starting from the last to the first, will be run again using its saved inputs to compute its gradients. Refer to [this](https://pytorch.org/docs/1.10.0/checkpoint.html) for more details.
+When working with extremely deep neural networks, memory becomes an immediate concern. It will be filled with [saved tensors](https://pytorch.org/docs/1.10.0/notes/autograd.html#:~:text=Saved%20tensors) that are needed for gradient computation. PyTorch provides a solution, [`checkpoint_sequential`](https://pytorch.org/docs/1.10.0/checkpoint.html#:~:text=torch.utils.checkpoint.checkpoint_sequential), that allows us to segment every few layers as a checkpoint. Such that, the forward pass is run in `no_grad` mode. Meanwhile, the inputs of every segment is saved in memory. Every other unreferenced tensor gets deallocated. In the backward pass, the forward pass of every segment, starting from the last to the first, will be run again using its saved inputs to compute its gradients. Refer to [this](https://pytorch.org/docs/1.10.0/checkpoint.html) for more details.
 
-This module extends the functionality of `torch.utils.checkpoint.checkpoint` to work with invertible functions. So, everything now can be released from memory and recomputed later using the inverse function in the backward pass. This is useful for extremely wide networks where more compute is traded with memory. However, there are few considerations to keep in mind when working with invertible checkpoints and non-materialized tensors. Please, read limitations section below for specifics.
+This module extends the functionality of `torch.utils.checkpoint.checkpoint` to work with invertible functions. So, everything now can be released from memory and recomputed later using the inverse function in the backward pass. This is useful for extremely wide networks where more compute is traded with memory. However, there are few considerations to keep in mind when working with invertible checkpoints and non-materialized tensors. Please, read the limitations section below for specifics.
 
 ## Installation
 
@@ -50,7 +50,7 @@ if __name__ == '__main__':
 
 ### forward()
 
-You can immediately notice few differences to the regular PyTorch module here. There is no longer a need to define `forward()`. Instead, it is replaced with `function()`. Additionally, it is necessary to define its inverse function as `inverse()`. Both methods can take any number of arguments including a keyword argument `cache`. This will be a `dict` to be filled with keyword arguments of `inverse()`. It will also contain an item with the key `':mode'` to distinguish which phase is the function called in; `'forward'`, `'inverse'`, or `'backward'`. Both function should return a `torch.Tensor` or a `tuple` of outputs which can have anything including tensors.
+You can immediately notice few differences to the regular PyTorch module here. There is no longer a need to define `forward()`. Instead, it is replaced with `function()`. Additionally, it is necessary to define its inverse function as `inverse()`. Both methods can take any number of arguments including a keyword argument `cache`. This will be a `dict` to be filled with keyword arguments of `inverse()`. It will also contain an item with the key `':mode'` to know in which phase was the function called; `'forward'`, `'inverse'`, or `'backward'`. Both function should return a `torch.Tensor` or a `tuple` of outputs which can have anything including tensors.
 
 ### function()
 
@@ -58,11 +58,11 @@ The first call to `function()` is always run in `dry_mode`. This is a novel mode
 
 ### inverse()
 
-The argument `cache[':mode']` will be `'inverse'`. You can verify your implementation of `inverse()` by calling `check()`. In some cases, switching to double precision is advised as invertible functions can run into some numerical instability when using single precision. For some functions, a view of an input tensor is passed in the output. In such case, this will be automatically detected and the input tensor will not b released from memory. Moreover, the argument `cache[':saved']` will have the positions of the saved input tensors. Saved tensors don't need to be computed during the inverse and can be replaced with `None`.
+The argument `cache[':mode']` will be `'inverse'`. You can verify your implementation of `inverse()` by calling `check()`. In some cases, switching to double precision is advised as invertible functions can run into some numerical instability when using single precision. For some functions, a view of an input tensor is passed in the output. In such case, this will be automatically detected and the input tensor will not be released from memory. Moreover, the argument `cache[':saved']` will have the positions of the saved input tensors. Saved tensors don't need to be computed during the inverse and can be replaced with `None`.
 
 ### reverse()
 
-`invtorch.nn.Module` can be implemented to be reversible, i.e. `forward()` will call `inverse()` instead of `function()`. Not all invertible modules need to support reversibility. If you want to support it in your own module, then you need to override the `reversible` property to return `True`. The module can be revered by calling `reverse()` and checked with the `reversed` property. To avoid confusion, `Module` has `call_function()` and `call_inverse()` which will call the correct function based on the `reversed` value.
+`invtorch.nn.Module` can be implemented to be reversible, i.e. `forward()` will call `inverse()` instead of `function()`. Not all invertible modules need to support reversibility. If you want to support it in your own module, then you need to override the `reversible` property to return `True`. The module can be reversed by calling `reverse()` and checked with the `reversed` property. To avoid confusion, `Module` has `call_function()` and `call_inverse()` which will call the correct function based on the `reversed` value.
 
 ### checkpoint, invertible, and seed
 
