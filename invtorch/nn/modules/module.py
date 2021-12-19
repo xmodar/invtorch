@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import torch
 from torch import nn
 
+from ...autograd.grad_mode import dry_mode
 from ...utils.checkpoint import checkpoint
 from ...utils.tools import pack
 
@@ -95,17 +96,30 @@ class Module(nn.Module):
     def reversed(self, value):
         self.reverse(value)
 
-    @torch.no_grad()
-    def check_inverse(self, *inputs, **kwargs):
-        """Check if `self.call_inverse()` computes correct input tensors"""
-        cache = {}
-        outputs = pack(self.call_function(*inputs, **kwargs, cache=cache))
-        outputs = pack(self.call_inverse(*outputs, **cache))
-        for inputs, outputs in itertools.zip_longest(inputs, outputs):
-            is_tensor = torch.is_tensor(inputs)
-            assert is_tensor == torch.is_tensor(outputs), 'out types mismatch'
-            same = not is_tensor or torch.allclose(inputs, outputs, 1e-3, 1e-5)
-            assert same, 'an inverted tensor mismatched (try double precision)'
+    def check(self, *args, **kwargs):
+        """Check if invertability and second forward pass consistency"""
+        def check(args1, args2, message, rtol=1e-3, atol=1e-5):
+            for arg1, arg2 in itertools.zip_longest(args1, args2):
+                is_tensor = torch.is_tensor(arg1)
+                assert is_tensor == torch.is_tensor(arg2), message
+                same = not is_tensor or torch.allclose(arg1, arg2, rtol, atol)
+                assert same, message
+
+        cache = {':mode': 'forward'}
+        with dry_mode():
+            outputs = pack(self.call_function(*args, **kwargs, cache=cache))
+        cache.pop(':mode')
+        cache['cache'] = {':mode': 'inverse', 'saved': set()}
+        with torch.inference_mode():
+            inputs = pack(self.call_inverse(*outputs, **cache))
+        check(args, inputs, 'inverted tensors mismatch (try double precision)')
+        cache = {':mode': 'backward'}
+        second = pack(self.call_function(*args, **kwargs, cache=cache))
+        if self.seed:
+            message = 'second forward pass mismatched despite `self.seed=True`'
+        else:
+            message = 'second forward pass mismatched (try `self.seed=True`)'
+        check(outputs, second, message)
         return True
 
     def get_extra_state(self):
