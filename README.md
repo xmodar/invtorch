@@ -29,10 +29,10 @@ class InvertibleLinear(inn.Module):
         self.weight = nn.Parameter(torch.randn(out_features, in_features))
         self.bias = nn.Parameter(torch.randn(out_features))
 
-    def function(self, inputs, cache=None):
+    def function(self, inputs):
         return inputs @ self.weight.T + self.bias
 
-    def inverse(self, outputs, cache=None):
+    def inverse(self, outputs):
         return (outputs - self.bias) @ self.weight.T.pinverse()
 
 
@@ -50,15 +50,15 @@ if __name__ == '__main__':
 
 ### forward()
 
-You can immediately notice few differences to the regular PyTorch module here. There is no longer a need to define `forward()`. Instead, it is replaced with `function()`. Additionally, it is necessary to define its inverse function as `inverse()`. Both methods can take any number of arguments including a keyword argument `cache`. This will be a `dict` to be filled with keyword arguments of `inverse()`. It will also contain an item with the key `':mode'` to know in which phase was the function called; `'forward'`, `'inverse'`, or `'backward'`. Both function should return a `torch.Tensor` or a `tuple` of outputs which can have anything including tensors.
+You can immediately notice few differences to the regular PyTorch module here. There is no longer a need to define `forward()`. Instead, it is replaced with `function()`. Additionally, it is necessary to define its inverse function as `inverse()`. Both methods should input and output only positional arguments as a `tuple` or a single `torch.Tensor`. Furthermore, `forward()` will accept a keyword argument `keep` which is an iterable of the input tensors that shouldn't be deallocated.
 
 ### function()
 
-The first call to `function()` is always run in `dry_mode`. This is a novel mode that has gradient graph construction enabled but doesn't allow for backward propagation. The second call is during the backward pass which is when the gradients will actually be computed. The argument `cache[':mode']` will be `'forward'` in the first call and `'backward'` in the second call. Your function should handle the case when `None` is passed instead.
+The first call to `function()` is always run in `dry_mode`. This is a novel mode that has gradient graph construction enabled but doesn't allow for backward propagation. The second call is during the backward pass which is when the gradients will actually be computed.
 
 ### inverse()
 
-The argument `cache[':mode']` will be `'inverse'`. You can verify your implementation of `inverse()` by calling `check()`. In some cases, switching to double precision is advised as invertible functions can run into some numerical instability when using single precision. For some functions, a view of an input tensor is passed in the output. In such case, this will be automatically detected and the input tensor will not be released from memory. Moreover, the argument `cache[':saved']` will have the positions of the saved input tensors. Saved tensors don't need to be computed during the inverse and can be replaced with `None`.
+You can verify your implementation of `inverse()` by calling `check()`. In some cases, switching to double precision is advised as invertible functions can run into some numerical instability when using single precision. For some functions, a view of an input tensor is passed in the outputs. In such case, this will be automatically detected and the input tensor will not be released from memory.
 
 ### reverse()
 
@@ -70,37 +70,31 @@ The argument `cache[':mode']` will be `'inverse'`. You can verify your implement
 
 ### invtorch.checkpoint()
 
-PyTorch's checkpoint cannot track the `requires_grad` attribute for its output tensors since it is running in `no_grad` mode. Instead, InvTorch's checkpoint doesn't have this issue because it runs in `dry_mode`. In addition, it supports invertible functions and allow for keyword arguments.
+PyTorch's checkpoint cannot track the `requires_grad` attribute for its output tensors since it is running in `no_grad` mode. Instead, InvTorch's checkpoint doesn't have this issue because it runs in `dry_mode`. In addition, it supports invertible functions even if they required auxiliary outputs which can be hidden using `invtorch.positional(hide_index)`. In `invtorch.nn.Module`, `function()` and `inverse()` are automatically wrapped as positional functions. To edit `hide_index` for them, simply add `self.function.hide_index = hide_index` in the `__init__()` constructor.
 
 ```python
 import torch
 import invtorch
 
 
-def function(x, constant=2, cache=None):
+@invtorch.positional(1)
+def function(x, constant=2):
     assert constant != 0, 'not invertible if `constant` is zero'
-    if cache is not None:  # save needed values for the inverse
-        cache['constant'] = constant
-    if constant == 1:
-        return x
-    return x * constant
+    return x * constant, constant
 
 
-def inverse(x, constant=2, cache=None):
+def inverse(x, constant=2):
     return x / constant
 
+
 if __name__ == '__main__':
-    # the cache is used to pass keyword arguments to inverse
-    # make sure to always detach any tensor in the cache
-    kwargs = {}
     x = torch.randn(3).requires_grad_()
-    y = function(x, 5, cache=kwargs)
-    ix = inverse(y, **kwargs, cache=None)
+    y = function(x, 5)
+    ix = inverse(y, 5)
     assert torch.allclose(x, ix), 'inputs mismatch'
     print('Input was kept:', x.storage().size() != 0)
 
-    keep, seed, enabled = (), False, True
-    cy = invtorch.checkpoint(function, inverse, keep, seed, enabled, x, 5)
+    cy = invtorch.checkpoint(function, x, 5, inverse=inverse)
     assert torch.allclose(y, cy), 'outputs mismatch'
     print('Input was freed:', x.storage().size() == 0)
 

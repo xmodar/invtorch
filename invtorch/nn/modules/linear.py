@@ -13,10 +13,15 @@ class Identity(Module):
     """Identity function"""
     reversible = True
 
-    def forward(self, *args, **kwargs):
+    def __init__(self):
+        super().__init__()
+        self.checkpoint = False
+
+    def function(self, *args):
         return args[0] if len(args) == 1 else args
 
-    function = inverse = call_function = call_inverse = forward
+    def inverse(self, *args):
+        return self.function(*args)
 
 
 class Linear(WrapperModule):
@@ -32,14 +37,14 @@ class Linear(WrapperModule):
     def reversible(self):
         return self.in_features == self.out_features
 
-    def function(self, inputs, cache=None):
+    def function(self, inputs):
         """Compute the outputs of the function"""
-        # pylint: disable=arguments-differ, unused-argument
+        # pylint: disable=arguments-differ
         return self.module.forward(inputs)
 
-    def inverse(self, outputs, cache=None):
+    def inverse(self, outputs):
         """Compute the inputs of the function"""
-        # pylint: disable=arguments-differ, unused-argument
+        # pylint: disable=arguments-differ
         if self.bias is not None:
             outputs = outputs - self.bias
         return F.linear(outputs, self.weight.pinverse())

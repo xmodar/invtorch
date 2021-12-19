@@ -11,4 +11,4 @@ from . import autograd, nn, random, utils
 from .autograd.grad_mode import *
 from .utils.checkpoint import *
 
-__version__ = '0.4.0'
+__version__ = '0.4.1'

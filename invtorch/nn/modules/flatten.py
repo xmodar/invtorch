@@ -9,21 +9,27 @@ class Flatten(Module):
     def __init__(self, start_dim=1, end_dim=-1, dims=None):
         super().__init__()
         self.start_dim, self.end_dim, self.dims = start_dim, end_dim, dims
+        self.function.hide_index = 1
 
-    def function(self, inputs, cache=None):
+    def function(self, inputs):
         # pylint: disable=arguments-differ
-        start_rem, start_dim = divmod(self.start_dim, inputs.dim())
-        assert abs(start_rem) < 2, '`self.start_dim` is out of range'
-        end_rem, end_dim = divmod(self.end_dim, inputs.dim())
-        assert abs(end_rem) < 2, '`self.end_dim` is out of range'
-        if cache is not None:
-            last = None if end_dim == inputs.dim() else end_dim + 1
-            cache['dims'] = inputs.shape[start_dim:last]
-        return inputs.flatten(start_dim, end_dim)
+        def check(dim):
+            rem, out = divmod(dim, inputs.dim())
+            assert abs(rem) < 2, f'{dim} is out of range [{inputs.dim()}]'
+            return out
 
-    def inverse(self, outputs, dims=None, cache=None):
-        # pylint: disable=arguments-differ, unused-argument
+        start_dim, end_dim = check(self.start_dim), check(self.end_dim)
+        end = None if end_dim == inputs.dim() else end_dim + 1
+        dims = inputs.shape[start_dim:end]
+        return inputs.flatten(start_dim, end_dim), dims
+
+    def inverse(self, outputs, dims=None):
+        # pylint: disable=arguments-differ
         if dims is None:
             dims = self.dims
         assert dims is not None, 'must provide `dims` or set `self.dims`'
         return outputs.unflatten(self.start_dim, dims)
+
+    @property
+    def reversible(self):
+        return self.dims is not None

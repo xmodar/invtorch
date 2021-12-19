@@ -1,6 +1,5 @@
 """Invertible Checkpoint"""
 import functools
-import itertools
 
 import torch
 
@@ -8,7 +7,7 @@ from ..autograd.grad_mode import dry_mode, in_dry_mode
 from ..random import DelayedRNGFork
 from ..utils.tools import pack, requires_grad
 
-__all__ = ['checkpoint']
+__all__ = ['checkpoint', 'positional']
 
 
 def get_tensor_id(inputs, by_storage=True):
@@ -23,61 +22,65 @@ def get_tensor_id_set(*inputs, by_storage=True):
     return set(map(get_id, filter(torch.is_tensor, inputs)))
 
 
-def flat(function, pure=False):
-    """Change a function to input and output only positional arguments"""
-    if function is None:
-        return None
+def positional(hide_index=None):
+    """Decorator for invtorch functions (can hide some outputs)"""
+    if callable(hide_index):
+        if hasattr(hide_index, 'hide_index'):
+            return hide_index
+        return positional(None)(hide_index)
 
-    def function_(cache, keys, *args):
-        args, kwargs = args[len(keys):], args[:len(keys)]
-        kwargs = {k: v for k, v in zip(keys, kwargs) if not k.startswith(':')}
-        outs = function(*args, **kwargs, cache=cache)
-        assert isinstance(outs, (torch.Tensor, tuple)), type(outs).__name__
-        cache[':single'] = torch.is_tensor(outs)
-        if pure:
-            for key in list(cache.keys()):
-                if key.startswith(':'):
-                    cache.pop(key)
-        return tuple(flat.args(pack(outs), cache))
+    def decorator(wrapped):
+        @functools.wraps(wrapped)
+        def wrapper(*args):
+            args = pack(wrapped(*args))
+            assert isinstance(args, tuple), 'outputs must be in a tuple'
+            return wrapper.outputs(args)
 
-    return function_
+        def outputs(args):
+            args = args[:wrapper.hide_index]
+            return args[0] if len(args) == 1 else args
 
+        wrapper.hide_index = hide_index
+        wrapper.outputs = outputs
+        wrapper.wrapped = wrapped
+        return wrapper
 
-# transform args and kwargs to only positional arguments for a flat function
-flat.args = lambda a, k: itertools.chain([tuple(k.keys())], k.values(), a)
-
-# get a keyword argument value given the flat arguments and a key
-flat.get = lambda a, k: a[a[0].index(k) + 1]
-
-# extract only the positional arguments from the flat arguments
-flat.only = lambda a: a[-1] if flat.get(a, ':single') else a[len(a[0]) + 1:]
+    return decorator
 
 
 class CheckpointFunction(torch.autograd.Function):
     """Improved `torch.utils.checkpoint.CheckpointFunction`"""
     # pylint: disable=abstract-method, arguments-differ, protected-access
     @classmethod
-    def apply(cls, function, inverse, keep, seed, enabled, /, *args, **kwargs):
+    def apply(
+            cls,
+            function,
+            *args,
+            seed=True,
+            enabled=True,
+            inverse=None,
+            keep=(),
+    ):
         """Improved `torch.utils.checkpoint.checkpoint`
 
         Refer to https://github.com/xmodar/invtorch for more details.
 
         Args:
-            function: any forward function with `cache` argument
-            inverse: inverse of `function` with `cache` argument
-            keep: set of input tensors to keep in memory during inverse mode
-            seed: same as preserve_rng_state; preserves random number generator
-            enabled: disables checkpointing if set to False
+            function: any forward function wrapped with `invtorch.positional()`
             *args: input arguments `tuple` to be passed to `function`
-            *kwargs: input keyword arguments `dict` to be passed to `function`
+            seed: same as preserve_rng_state; preserves random number generator
+            enabled: disables checkpointing if set to `False`
+            inverse: inverse of `function` wrapped with `invtorch.positional()`
+            keep: set of input tensors to keep in memory during inverse mode
 
         Returns:
-            Outputs of `function` with checkpointing if required
+            Outputs of `function` with checkpointing if enabled
         """
+        function = positional(function)
         if not enabled or in_dry_mode() or not torch.is_grad_enabled():
-            return function(*args, **kwargs)
-        args = flat.args(args, kwargs)
-        function, inverse = flat(function), flat(inverse, pure=True)
+            return function(*args)
+        if inverse is not None:
+            inverse = positional(inverse)
         nonce = torch.tensor((), requires_grad=True)  # force differentiability
         return super().apply(function, inverse, pack(keep), seed, nonce, *args)
 
@@ -88,20 +91,20 @@ class CheckpointFunction(torch.autograd.Function):
         ctx.autocast = torch.is_autocast_enabled()
         with dry_mode():
             ctx.forked_rng = DelayedRNGFork.from_tensors(args, seed)
-            outputs = function({':mode': 'forward'}, *args)
+            outputs = pack(function.wrapped(*args))
 
         # bookkeep differentiable tensors
         grads = list(map(requires_grad, outputs))
         no_grads = (x for x, g in zip(outputs, grads) if not g)
         ctx.mark_non_differentiable(*filter(torch.is_tensor, no_grads))
         if not any(grads):
-            return flat.only(outputs)  # no output requires gradient
+            return function.outputs(outputs)  # no output requires gradient
 
         # get all tensors that should be deallocated from memory
         if inverse is None:
             seep = ()
         else:
-            keep = get_tensor_id_set(*keep, *outputs, *args[:1 + len(args[0])])
+            keep = get_tensor_id_set(*keep, *outputs)
             seep = get_tensor_id_set(*args) - keep
             if seep:
                 ctx.outputs = outputs
@@ -121,7 +124,7 @@ class CheckpointFunction(torch.autograd.Function):
             else:
                 ctx.inputs[i] = argument
         ctx.save_for_backward(*tensors)
-        return flat.only(outputs)
+        return function.outputs(outputs)
 
     @staticmethod
     def backward(ctx, *args):
@@ -131,17 +134,8 @@ class CheckpointFunction(torch.autograd.Function):
         # materialize any deallocated tensors by calling inverse
         tensors = ctx.saved_tensors
         if ctx.inverse is not None:
-            offset = len(ctx.inputs[0]) + 1  # ignore keys and values
-            cache = {
-                ':mode': 'inverse',
-                ':saved': {
-                    i - offset
-                    for i in ctx.indices
-                    if i >= offset and i not in ctx.deallocated
-                },
-            }
             with torch.inference_mode():
-                inverted = ctx.inverse(cache, *ctx.outputs)
+                inverted = pack(ctx.inverse(*ctx.outputs))
                 for i, idx in enumerate(ctx.indices):
                     if idx in ctx.deallocated:
                         tensors[i].set_(inverted[idx])
@@ -155,8 +149,7 @@ class CheckpointFunction(torch.autograd.Function):
         inputs = [inputs[i] for i in range(len(inputs))]
         with torch.enable_grad(), torch.cuda.amp.autocast(ctx.autocast):
             with ctx.forked_rng:
-                outputs = ctx.function({':mode': 'backward'}, *inputs)
-                outputs = pack(flat.only(outputs))
+                outputs = pack(ctx.function.wrapped(*inputs))
 
         # perform the backward pass on outputs that requires_grad
         outputs_with_grad, args_with_grad = [], []
