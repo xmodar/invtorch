@@ -23,10 +23,12 @@ def get_tensor_id_set(*inputs, by_storage=True):
     return set(map(get_id, filter(torch.is_tensor, inputs)))
 
 
-def flat(function):
+def flat(function, pure=False):
     """Change a function to input and output only positional arguments"""
-    @functools.wraps(function)
-    def function_(cache, pure, keys, *args):
+    if function is None:
+        return None
+
+    def function_(cache, keys, *args):
         args, kwargs = args[len(keys):], args[:len(keys)]
         kwargs = {k: v for k, v in zip(keys, kwargs) if not k.startswith(':')}
         outs = function(*args, **kwargs, cache=cache)
@@ -44,70 +46,21 @@ def flat(function):
 # transform args and kwargs to only positional arguments for a flat function
 flat.args = lambda a, k: itertools.chain([tuple(k.keys())], k.values(), a)
 
-# get keyword argument value give the key from the output of a flat function
-flat.get = lambda o, k: o[o[0].index(k) + 1]
+# get a keyword argument value given the flat arguments and a key
+flat.get = lambda a, k: a[a[0].index(k) + 1]
 
-# extract only the positional arguments from the output of a flat function
-flat.outs = lambda o: o[-1] if flat.get(o, ':single') else o[len(o[0]) + 1:]
+# extract only the positional arguments from the flat arguments
+flat.only = lambda a: a[-1] if flat.get(a, ':single') else a[len(a[0]) + 1:]
 
 
 class CheckpointFunction(torch.autograd.Function):
-    """Improved `torch.utils.checkpoint.CheckpointFunction` (invertible)"""
+    """Improved `torch.utils.checkpoint.CheckpointFunction`"""
     # pylint: disable=abstract-method, arguments-differ, protected-access
     @classmethod
     def apply(cls, function, inverse, keep, seed, enabled, /, *args, **kwargs):
         """Improved `torch.utils.checkpoint.checkpoint`
 
-        The original checkpoint cannot track which tensors `requires_grad`.
-        See https://pytorch.org/docs/1.10.0/checkpoint.html for more details.
-
-        Instead, this checkpoint doesn't have this issue and it also supports
-        invertible functions which will allow deallocating some input tensors,
-        to save more memory, that will be recomputed in the backward pass.
-
-        Example of a function and its inverse and their structure. Notice, how
-        they both need to accept an optional keyword argument `cache`:
-        ```python
-        def function(x, constant=2, cache=None):
-            assert constant != 0, 'not invertible if `constant` is zero'
-            if cache is not None:  # save needed values for the inverse
-                cache['constant'] = constant
-            return x * constant
-
-
-        def inverse(x, constant=2, cache=None):
-            return x / constant
-
-
-        # the cache is used to pass keyword arguments to inverse
-        # make sure to always detach any tensor in the cache
-        cache = {}
-        y = function(x, 5, cache)
-        x = inverse(x, **cache)
-        ```
-
-        When using this checkpoint with invertible inputs, `function` will be
-        called once in the forward pass with `cache[':mode'] == 'forward'`.
-        Then, later in the backward pass, `inverse` is called followed by a
-        call to `function` again with `cache[':mode'] == 'backward'`.
-
-        There are few caveats to consider though. Invertible functions are hard
-        to define without requiring more memory. Moreover, they are prone to
-        numerical instabilities (e.g., multiplying by numbers close to zero).
-        Even if we can get away with these fundamental problems, there are
-        technical details to consider here. There is no way of guarding against
-        accessing the data in the input tensors after calling the function and
-        before the backward pass. It is up to the user to ensure this.
-        Otherwise, it is possible to run into illegal memory access errors.
-        Think of residual connections as an example. In `x + f(x)`, assuming
-        `f` is an invertible checkpoint, `x` will be freed from memory before
-        the sum is computed. On the other hand, we can maybe use
-        `x.clone() + f(x)` (not `f(x) + x.clone()`!) but now we have a copy of
-        `x` in memory. It is recommended to encapsulate this inside `f` itself
-        or use the simple checkpoint instead. Other alternatives exists and you
-        should study your case carefully before deciding to use this. For
-        instance, check out `torch.autograd.graph.saved_tensors_hooks()` and
-        `graph.save_on_cpu()`. Source: https://github.com/xmodar/invtorch
+        Refer to https://github.com/xmodar/invtorch for more details.
 
         Args:
             function: any forward function with `cache` argument
@@ -124,7 +77,7 @@ class CheckpointFunction(torch.autograd.Function):
         if not enabled or in_dry_mode() or not torch.is_grad_enabled():
             return function(*args, **kwargs)
         args = flat.args(args, kwargs)
-        function, inverse = flat(function), flat(inverse)
+        function, inverse = flat(function), flat(inverse, pure=True)
         nonce = torch.tensor((), requires_grad=True)  # force differentiability
         return super().apply(function, inverse, pack(keep), seed, nonce, *args)
 
@@ -135,20 +88,20 @@ class CheckpointFunction(torch.autograd.Function):
         ctx.autocast = torch.is_autocast_enabled()
         with dry_mode():
             ctx.forked_rng = DelayedRNGFork.from_tensors(args, seed)
-            outputs = function({':mode': 'forward'}, False, *args)
+            outputs = function({':mode': 'forward'}, *args)
 
         # bookkeep differentiable tensors
         grads = list(map(requires_grad, outputs))
         no_grads = (x for x, g in zip(outputs, grads) if not g)
         ctx.mark_non_differentiable(*filter(torch.is_tensor, no_grads))
         if not any(grads):
-            return flat.outs(outputs)  # no output requires gradient
+            return flat.only(outputs)  # no output requires gradient
 
         # get all tensors that should be deallocated from memory
         if inverse is None:
             seep = ()
         else:
-            keep = get_tensor_id_set(*keep, *outputs)
+            keep = get_tensor_id_set(*keep, *outputs, *args[:1 + len(args[0])])
             seep = get_tensor_id_set(*args) - keep
             if seep:
                 ctx.outputs = outputs
@@ -168,7 +121,7 @@ class CheckpointFunction(torch.autograd.Function):
             else:
                 ctx.inputs[i] = argument
         ctx.save_for_backward(*tensors)
-        return flat.outs(outputs)
+        return flat.only(outputs)
 
     @staticmethod
     def backward(ctx, *args):
@@ -178,9 +131,17 @@ class CheckpointFunction(torch.autograd.Function):
         # materialize any deallocated tensors by calling inverse
         tensors = ctx.saved_tensors
         if ctx.inverse is not None:
-            saved = set(ctx.indices) - ctx.deallocated
+            offset = len(ctx.inputs[0]) + 1  # ignore keys and values
+            cache = {
+                ':mode': 'inverse',
+                ':saved': {
+                    i - offset
+                    for i in ctx.indices
+                    if i >= offset and i not in ctx.deallocated
+                },
+            }
             with torch.inference_mode():
-                inverted = ctx.inverse({':mode': saved}, True, *ctx.outputs)
+                inverted = ctx.inverse(cache, *ctx.outputs)
                 for i, idx in enumerate(ctx.indices):
                     if idx in ctx.deallocated:
                         tensors[i].set_(inverted[idx])
@@ -194,8 +155,8 @@ class CheckpointFunction(torch.autograd.Function):
         inputs = [inputs[i] for i in range(len(inputs))]
         with torch.enable_grad(), torch.cuda.amp.autocast(ctx.autocast):
             with ctx.forked_rng:
-                outputs = ctx.function({':mode': 'backward'}, False, *inputs)
-                outputs = pack(flat.outs(outputs))
+                outputs = ctx.function({':mode': 'backward'}, *inputs)
+                outputs = pack(flat.only(outputs))
 
         # perform the backward pass on outputs that requires_grad
         outputs_with_grad, args_with_grad = [], []
