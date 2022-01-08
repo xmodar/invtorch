@@ -17,12 +17,10 @@ class Sequential(WrapperModule):
     def function(self, *args):
         extras, counts = [], []
         for layer in self.module:
-            layer = layer.call_function
-            outputs = pack(layer.wrapped(*args))
-            args = pack(layer.outputs(outputs))
+            outputs = pack(layer.call_function(*args))
+            args = pack(layer.process(outputs))
             counts.append(len(outputs) - len(args))
             extras.extend(outputs[len(args):])
-        self.function.hide_index = len(args)
         return (*args, *extras, counts)
 
     def inverse(self, *args):
@@ -34,6 +32,14 @@ class Sequential(WrapperModule):
         for layer in reversed(self.module):
             args = pack(layer.call_inverse(*args, *extras.pop()))
         return args[0] if len(args) == 1 else args
+
+    def process(self, outputs):
+        return super().process(outputs[:-sum(outputs[-1]) - 1])
+
+    @property
+    def num_outputs(self):
+        """end index to slice the outputs of `call_function()`"""
+        return self.module[-1].num_outputs if self.module else None
 
     @property
     def call_function(self):

@@ -50,7 +50,7 @@ if __name__ == '__main__':
 
 ### forward()
 
-You can immediately notice few differences to the regular PyTorch module here. There is no longer a need to define `forward()`. Instead, it is replaced with `function()`. Additionally, it is necessary to define its inverse function as `inverse()`. Both methods should input and output only positional arguments as a `tuple` or a single `torch.Tensor`. Furthermore, `forward()` will accept a keyword argument `keep` which is an iterable of the input tensors that shouldn't be deallocated.
+You can immediately notice few differences to the regular PyTorch module here. There is no longer a need to define `forward()`. Instead, it is replaced with `function()`. Additionally, it is necessary to define its inverse function as `inverse()`. Both methods should input and output only positional arguments as a `tuple` or a single `torch.Tensor`. Furthermore, `forward()` accepts an optional keyword argument `keep` which is an iterable of input tensors that shouldn't be deallocated.
 
 ### function()
 
@@ -60,9 +60,13 @@ The first call to `function()` is always run in `dry_mode`. This is a novel mode
 
 You can verify your implementation of `inverse()` by calling `check()`. In some cases, switching to double precision is advised as invertible functions can run into some numerical instability when using single precision. For some functions, a view of an input tensor is passed in the outputs. In such case, this will be automatically detected and the input tensor will not be released from memory.
 
+### num_outputs
+
+Sometimes, `inverse()` requires auxiliary outputs from `function()` that are not necessarily needed as an output for `forward()`. To specify how many outputs do we need to keep, we can modify the `num_outputs` attribute (`None` means keep everything).
+
 ### reverse()
 
-`invtorch.nn.Module` can be implemented to be reversible, i.e. `forward()` will call `inverse()` instead of `function()`. Not all invertible modules need to support reversibility. If you want to support it in your own module, then you need to override the `reversible` property to return `True`. The module can be reversed by calling `reverse()` and checked with the `reversed` property. To avoid confusion, `Module` has `call_function()` and `call_inverse()` which will call the correct function based on the `reversed` value.
+`invtorch.nn.Module` can be implemented to be reversible, i.e. `forward()` will call `inverse()` instead of `function()`. Not all invertible modules need to support reversibility. If you want to support it in your own module, then you need to override the `reversible` property to return `True`. The module can be reversed by calling `reverse()` and checked with the `reversed` property. To avoid confusion, `Module` has `call_function()` and `call_inverse()` which will call the correct function based on the value of `reversed`.
 
 ### checkpoint, invertible, and seed
 
@@ -70,41 +74,11 @@ You can verify your implementation of `inverse()` by calling `check()`. In some 
 
 ### invtorch.checkpoint()
 
-PyTorch's checkpoint cannot track the `requires_grad` attribute for its output tensors since it is running in `no_grad` mode. Instead, InvTorch's checkpoint doesn't have this issue because it runs in `dry_mode`. In addition, it supports invertible functions even if they required auxiliary outputs which can be hidden using `invtorch.positional(hide_index)`. In `invtorch.nn.Module`, `function()` and `inverse()` are automatically wrapped as positional functions. To edit `hide_index` for them, simply add `self.function.hide_index = hide_index` in the `__init__()` constructor.
-
-```python
-import torch
-import invtorch
-
-
-@invtorch.positional(1)
-def function(x, constant=2):
-    assert constant != 0, 'not invertible if `constant` is zero'
-    return x * constant, constant
-
-
-def inverse(x, constant=2):
-    return x / constant
-
-
-if __name__ == '__main__':
-    x = torch.randn(3).requires_grad_()
-    y = function(x, 5)
-    ix = inverse(y, 5)
-    assert torch.allclose(x, ix), 'inputs mismatch'
-    print('Input was kept:', x.storage().size() != 0)
-
-    cy = invtorch.checkpoint(function, x, 5, inverse=inverse)
-    assert torch.allclose(y, cy), 'outputs mismatch'
-    print('Input was freed:', x.storage().size() == 0)
-
-    cy.backward(torch.randn_like(cy))
-    print('Input was restored:', x.storage().size() != 0)
-```
+PyTorch's checkpoint cannot track the `requires_grad` attribute for its output tensors since it is running in `no_grad` mode. Instead, InvTorch's checkpoint doesn't have this issue because it runs in `dry_mode`. In addition, it supports invertible functions.
 
 ## Limitations
 
-There are few caveats to consider though. Invertible functions are hard to define without requiring more memory. Moreover, they are prone to numerical instabilities (e.g., multiplying by numbers close to zero). Even if we can get away with these fundamental problems, there are technical details to consider. There is no way of guarding against accessing the data in the input tensors after calling `function()` and before the backward pass. It is up to the user to ensure this. Otherwise, it is possible to run into illegal memory access errors. Think of residual connections as an example. In `x + f(x)`, assuming `f` is an invertible checkpoint, `x` will be freed from memory before the sum is computed. On the other hand, we can maybe use `x.clone() + f(x)` (not `f(x) + x.clone()`!) but now we have a copy of `x` in memory. It is recommended to encapsulate this inside `f` itself or use the simple checkpoint instead. Other alternatives exists and you should study your case carefully before deciding to use this. For instance, check out `torch.autograd.graph.saved_tensors_hooks()` and `torch.autograd.graph.save_on_cpu()`.
+There are few caveats to consider though. Invertible functions are hard to define without requiring more memory. Moreover, they are prone to numerical instabilities (e.g., multiplying by numbers close to zero). Even if we can get away with these fundamental problems, there are technical details to consider. There is no way of guarding against accessing the data in the input tensors after calling `function()` and before the backward pass. It is up to the user to ensure this. Otherwise, it is possible to run into illegal memory access errors. Think of residual connections as an example. In `x + f(x)`, assuming `f` is an invertible checkpoint, `x` will be freed from memory before the sum is computed. On the other hand, we can maybe use `x.clone() + f(x)` (not `f(x) + x.clone()`!) but now we have a copy of `x` in memory. It is recommended to encapsulate this inside `f` itself or use a simple checkpoint instead. Other alternatives exists and you should study your case carefully before deciding to use this. For instance, check out `torch.autograd.graph.saved_tensors_hooks()` and `torch.autograd.graph.save_on_cpu()`.
 
 ## TODOs
 
@@ -113,4 +87,4 @@ Here are few feature ideas that could be implemented to enrich the utility of th
 - Add more basic operations
 - Add coupling-based invertible modules
 - Add more checks to help the user debug more features
-- Develop an automatic [mode optimization](https://arxiv.org/abs/1604.06174) for a network
+- Develop an automatic [mode optimization](https://arxiv.org/abs/1604.06174)

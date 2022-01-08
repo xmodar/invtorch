@@ -10,18 +10,13 @@ __all__ = ['Identity', 'Linear']
 
 
 class Identity(Module):
-    """Identity function"""
+    """Identity module"""
     reversible = True
 
-    def __init__(self):
-        super().__init__()
-        self.checkpoint = False
-
-    def function(self, *args):
+    def forward(self, *args, **kwargs):
         return args[0] if len(args) == 1 else args
 
-    def inverse(self, *args):
-        return self.function(*args)
+    function = inverse = forward
 
 
 class Linear(WrapperModule):

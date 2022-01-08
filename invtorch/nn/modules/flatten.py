@@ -6,10 +6,11 @@ __all__ = ['Flatten']
 
 class Flatten(Module):
     """Invertible flatten operation"""
+    num_outputs = 1
+
     def __init__(self, start_dim=1, end_dim=-1, dims=None):
         super().__init__()
         self.start_dim, self.end_dim, self.dims = start_dim, end_dim, dims
-        self.function.hide_index = 1
 
     def function(self, inputs):
         # pylint: disable=arguments-differ

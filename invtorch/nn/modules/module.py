@@ -6,26 +6,22 @@ import torch
 from torch import nn
 
 from ...autograd.grad_mode import dry_mode
-from ...utils.checkpoint import checkpoint, positional
-from ...utils.tools import pack
+from ...utils.checkpoint import checkpoint
+from ...utils.tools import pack, requires_grad
 
 __all__ = ['Module', 'WrapperModule']
 
 
 class Module(nn.Module):
-    """Base invertible module `inputs = self.inverse(*self.function(*inputs))`
+    """Base invertible module"""
+    num_outputs = None  # end index to slice the outputs of `call_function()`
 
-    Use this with great caution. Refer to the notes in `invtorch.checkpoint()`
-    Source: https://github.com/xmodar/invtorch
-    """
     def __init__(self):
         super().__init__()
         self.seed = False  # preserve RNG state in backward
         self.checkpoint = True  # enables or disables checkpointing
         self.invertible = True  # use inverse if checkpointing is enabled
         self._reversed = False  # switch function and inverse
-        self.function = positional(self.function)
-        self.inverse = positional(self.inverse)
 
     def forward(self, *args, **kwargs):
         """Perform the forward pass"""
@@ -36,13 +32,13 @@ class Module(nn.Module):
         }
         assert all(k not in kwargs for k in private), 'got an illegal argument'
         kwargs.update(private)
-        return checkpoint(self.call_function, *args, **kwargs)
+        return self.process(checkpoint(self.call_function, *args, **kwargs))
 
-    def function(self, *args):  # pylint: disable=method-hidden
+    def function(self, *args):
         """Compute the outputs of the function given the inputs"""
         raise NotImplementedError
 
-    def inverse(self, *args):  # pylint: disable=method-hidden
+    def inverse(self, *args):
         """Compute the inputs of the function given the outputs"""
         raise NotImplementedError
 
@@ -103,9 +99,23 @@ class Module(nn.Module):
     def reversed(self, value):
         self.reverse(value)
 
-    def check(self, *args):
-        """Check if invertability and second forward pass consistency"""
-        def check(args1, args2, message, rtol=1e-3, atol=1e-5):
+    def process(self, outputs):
+        """Process the outputs of `self.call_function()`"""
+        outputs = pack(outputs)
+        assert isinstance(outputs, tuple), 'should only output a `tuple`'
+        num_outputs = self.num_outputs
+        if num_outputs is None:
+            num_outputs = len(outputs)
+        elif num_outputs < 0:
+            num_outputs += len(outputs)
+        assert 0 < num_outputs <= len(outputs), f'needs {num_outputs} outputs'
+        assert not requires_grad(any=outputs[num_outputs:]), (
+            'discarded outputs must not be differentiable (detach manually)')
+        return outputs[0] if num_outputs == 1 else outputs[:num_outputs]
+
+    def check(self, *args, rtol=1e-3, atol=1e-5):
+        """Check invertability and second forward pass consistency"""
+        def check(args1, args2, message):
             for arg1, arg2 in itertools.zip_longest(args1, args2):
                 is_tensor = torch.is_tensor(arg1)
                 assert is_tensor == torch.is_tensor(arg2), message
@@ -113,11 +123,11 @@ class Module(nn.Module):
                 assert same, message
 
         with dry_mode():
-            outputs = pack(self.call_function.wrapped(*args))
+            outputs = pack(self.call_function(*args))
         with torch.inference_mode():
             inputs = pack(self.call_inverse(*outputs))
         check(args, inputs, 'inverted tensors mismatch (try double precision)')
-        second = pack(self.call_function.wrapped(*args))
+        second = pack(self.call_function(*args))
         if self.seed:
             message = 'second forward pass mismatched despite `self.seed=True`'
         else:
