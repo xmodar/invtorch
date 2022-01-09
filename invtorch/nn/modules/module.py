@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import torch
 from torch import nn
 
-from ...autograd.grad_mode import dry_mode
+from ...autograd.grad_mode import backward_mode, dry_mode
 from ...utils.checkpoint import checkpoint
 from ...utils.tools import pack, requires_grad
 
@@ -127,7 +127,8 @@ class Module(nn.Module):
         with torch.inference_mode():
             inputs = pack(self.call_inverse(*outputs))
         check(args, inputs, 'inverted tensors mismatch (try double precision)')
-        second = pack(self.call_function(*args))
+        with backward_mode():
+            second = pack(self.call_function(*args))
         if self.seed:
             message = 'second forward pass mismatched despite `self.seed=True`'
         else:
@@ -176,9 +177,8 @@ class Module(nn.Module):
         return extra
 
 
-class WrapperModule(Module):
+class WrapperModule(Module):  # pylint: disable=abstract-method
     """Base wrapper invertible module"""
-    # pylint: disable=abstract-method
     wrapped_type = ()
 
     def __init__(self, module):

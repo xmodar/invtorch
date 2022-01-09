@@ -25,15 +25,13 @@ class _ConvNd(WrapperModule):
         outputs, inputs = self.flat_weight_shape
         return inputs == outputs, f'out_channels/groups={outputs} != {inputs}'
 
-    def function(self, inputs):
-        # pylint: disable=arguments-differ
+    def function(self, inputs):  # pylint: disable=arguments-differ
         # TODO: make input padding an opt-in feature
         input_padding = self.get_input_padding(inputs.shape)
         assert sum(input_padding) == 0, f'inputs need padding: {inputs.shape}'
         return self.module.forward(inputs)
 
-    def inverse(self, outputs):
-        # pylint: disable=arguments-differ
+    def inverse(self, outputs):  # pylint: disable=arguments-differ
         if self.bias is not None:
             outputs = outputs - self.bias.view(-1, *[1] * self.dim)
 

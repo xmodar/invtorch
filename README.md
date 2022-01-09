@@ -54,7 +54,7 @@ You can immediately notice few differences to the regular PyTorch module here. T
 
 ### function()
 
-The first call to `function()` is always run in `dry_mode`. This is a novel mode that has gradient graph construction enabled but doesn't allow for backward propagation. The second call is during the backward pass which is when the gradients will actually be computed.
+The first call to `function()` is always run in `dry_mode` (check it with `invtorch.in_dry_mode()`). This is a novel mode that has gradient graph construction enabled but doesn't allow for backward propagation. The second call is during the backward pass which is when the gradients will actually be computed (check it with `invtorch.in_backward()`).
 
 ### inverse()
 

@@ -12,8 +12,7 @@ class Flatten(Module):
         super().__init__()
         self.start_dim, self.end_dim, self.dims = start_dim, end_dim, dims
 
-    def function(self, inputs):
-        # pylint: disable=arguments-differ
+    def function(self, inputs):  # pylint: disable=arguments-differ
         def check(dim):
             rem, out = divmod(dim, inputs.dim())
             assert abs(rem) < 2, f'{dim} is out of range [{inputs.dim()}]'
@@ -24,8 +23,7 @@ class Flatten(Module):
         dims = inputs.shape[start_dim:end]
         return inputs.flatten(start_dim, end_dim), dims
 
-    def inverse(self, outputs, dims=None):
-        # pylint: disable=arguments-differ
+    def inverse(self, outputs, dims=None):  # pylint: disable=arguments-differ
         if dims is None:
             dims = self.dims
         assert dims is not None, 'must provide `dims` or set `self.dims`'

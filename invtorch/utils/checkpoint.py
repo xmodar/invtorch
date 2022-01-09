@@ -4,7 +4,7 @@ import itertools
 
 import torch
 
-from ..autograd.grad_mode import dry_mode, in_dry_mode
+from ..autograd.grad_mode import backward_mode, dry_mode, in_dry_mode
 from ..random import DelayedRNGFork
 from ..utils.tools import pack, requires_grad
 
@@ -114,9 +114,8 @@ class CheckpointFunction(torch.autograd.Function):
             inputs[idx].requires_grad_(tensors[i].requires_grad)
         inputs = [inputs[i] for i in range(len(inputs))]
         with torch.enable_grad(), torch.cuda.amp.autocast(ctx.autocast):
-            with ctx.forked_rng:
+            with backward_mode(), ctx.forked_rng:
                 outputs = pack(ctx.function(*inputs))
-
         # perform the backward pass on outputs that requires_grad
         outputs_with_grad, args_with_grad = [], []
         for output, arg in zip(outputs, args):

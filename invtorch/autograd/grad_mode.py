@@ -4,10 +4,26 @@ from contextlib import contextmanager
 
 import torch
 
-__all__ = ['dry_mode', 'in_dry_mode']
+__all__ = ['backward_mode', 'in_backward_mode', 'dry_mode', 'in_dry_mode']
 
 _local = threading.local()
+_local.backward_mode = False
 _local.dry_mode = 0
+
+
+def in_backward_mode():
+    """Whether we are in backward"""
+    return _local.backward_mode
+
+
+@contextmanager
+def backward_mode(enabled=True):
+    """Enable backward_mode; don't call this in your code"""
+    try:
+        _local.backward_mode = bool(enabled)
+        yield
+    finally:
+        _local.backward_mode = False
 
 
 def in_dry_mode():

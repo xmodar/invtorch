@@ -32,14 +32,12 @@ class Linear(WrapperModule):
     def reversible(self):
         return self.in_features == self.out_features
 
-    def function(self, inputs):
+    def function(self, inputs):  # pylint: disable=arguments-differ
         """Compute the outputs of the function"""
-        # pylint: disable=arguments-differ
         return self.module.forward(inputs)
 
-    def inverse(self, outputs):
+    def inverse(self, outputs):  # pylint: disable=arguments-differ
         """Compute the inputs of the function"""
-        # pylint: disable=arguments-differ
         if self.bias is not None:
             outputs = outputs - self.bias
         return F.linear(outputs, self.weight.pinverse())
