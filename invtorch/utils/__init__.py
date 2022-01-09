@@ -1,3 +1,3 @@
 """Invertible Utilities"""
-from . import checkpoint
+from . import checkpoint, parametrizations
 from .tools import *
