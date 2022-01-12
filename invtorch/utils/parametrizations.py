@@ -33,7 +33,7 @@ class Orthogonal(_Orthogonal):
     def __init__(self, weight, flatten=None, strategy=None, fast=True):
         if flatten is not None:
             weight = weight.flatten(flatten)
-        assert weight.ndim > 1, f'flattened tensor is {weight.ndim}D (< 2D)'
+        assert weight.dim() > 1, f'flattened tensor is {weight.dim()}D (< 2D)'
         if strategy is None:
             if weight.shape[-2] == weight.shape[-1] or weight.is_complex():
                 strategy = 'matrix_exp'

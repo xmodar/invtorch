@@ -8,7 +8,7 @@ __all__ = ['Flatten']
 
 
 class Flatten(nn.Flatten, Module):
-    """Invertible flatten operation"""
+    """Invertible flatten layer"""
     reversible = True
     forward = Module.forward
     num_inputs = num_outputs = 1

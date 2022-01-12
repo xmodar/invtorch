@@ -13,7 +13,7 @@ __all__ = ['Identity', 'Linear']
 
 
 class Identity(nn.Identity, Module):
-    """Identity module"""
+    """Invertible Identity layer"""
     reversible = True
 
     def forward(self, *args, **kwargs):  # pylint: disable=unused-argument

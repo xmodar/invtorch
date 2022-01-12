@@ -2,36 +2,44 @@
 import functools
 
 import torch
-import torch.nn.functional as F
 from torch import nn
+from torch.nn import functional as F
+from torch.nn.utils import parametrize as P
 
+from ...utils.parametrizations import ScaledOrthogonal
 from .module import Module
 
 __all__ = ['Conv1d', 'Conv2d', 'Conv3d']
 
 
 class _ConvNd(nn.modules.conv._ConvNd, Module):
-    """Invertible convolution"""
+    """Invertible convolution layer"""
     # pylint: disable=protected-access
 
     @functools.wraps(nn.modules.conv._ConvNd.__init__)
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        orthogonal = ScaledOrthogonal(self.weight, flatten=1)
+        P.register_parametrization(self, 'weight', orthogonal, unsafe=True)
         outputs, inputs = self.flat_weight_shape
         assert inputs <= outputs, f'out_channels/groups={outputs} < {inputs}'
         # TODO: assert kernel_size is still invertible given stride & dilation
 
+    def _conv_forward(self, input, weight, bias):
+        """perform the forward pass given the inputs and parameters"""
+        # pylint: disable=redefined-builtin
+        raise NotImplementedError
+
     @property
     def reversible(self):
         outputs, inputs = self.flat_weight_shape
-        return inputs == outputs, f'out_channels/groups={outputs} != {inputs}'
+        return inputs == outputs
 
     def function(self, inputs):  # pylint: disable=arguments-differ
         # TODO: make input padding an opt-in feature
         input_padding = self.get_input_padding(inputs.shape)
         assert sum(input_padding) == 0, f'inputs need padding: {inputs.shape}'
-        # pylint: disable=bad-super-call
-        return super(type(self), self).forward(inputs)
+        return self._conv_forward(inputs, self.weight, self.bias)
 
     def inverse(self, outputs):  # pylint: disable=arguments-differ
         if self.bias is not None:
@@ -39,8 +47,9 @@ class _ConvNd(nn.modules.conv._ConvNd, Module):
 
         # compute the overlapped inputs
         factor, input_shape = self.flat_weight_shape
+        inverse = torch.inverse if self.reversible else torch.pinverse
         weight = self.weight.view(self.groups, -1, input_shape)
-        weight = weight.pinverse().transpose(-1, -2).reshape_as(self.weight)
+        weight = inverse(weight).transpose(-1, -2).reshape(self.weight_shape)
         inputs = self.conv_transpose(outputs, weight)
 
         # TODO: make kernel overlaps an opt-in feature
@@ -69,12 +78,17 @@ class _ConvNd(nn.modules.conv._ConvNd, Module):
     @property
     def dim(self):
         """Number of dimensions"""
-        return self.weight.dim() - 2
+        return len(self.weight_shape) - 2
+
+    @property
+    def weight_shape(self):
+        """Shape of the weight parameter"""
+        return self.parametrizations.weight.original.shape
 
     @property
     def flat_weight_shape(self):
         """Output and input shapes"""
-        shape = self.weight.shape
+        shape = self.weight_shape
         return shape[0] // self.groups, shape[1:].numel()
 
     def extra_repr(self):
@@ -82,15 +96,15 @@ class _ConvNd(nn.modules.conv._ConvNd, Module):
 
 
 class Conv1d(nn.Conv1d, _ConvNd):
-    """Invertible 1D convolution"""
+    """Invertible 1D convolution layer"""
     forward = Module.forward
 
 
 class Conv2d(nn.Conv2d, _ConvNd):
-    """Invertible 2D convolution"""
+    """Invertible 2D convolution layer"""
     forward = Module.forward
 
 
 class Conv3d(nn.Conv3d, _ConvNd):
-    """Invertible 3D convolution"""
+    """Invertible 3D convolution layer"""
     forward = Module.forward

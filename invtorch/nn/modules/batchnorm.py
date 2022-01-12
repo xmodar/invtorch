@@ -18,7 +18,7 @@ class _BatchNorm(nn.modules.batchnorm._BatchNorm, Module):
     def function(self, inputs):  # pylint: disable=arguments-differ
         self._check_input_dim(inputs)
         mean, var = self._get_stats(inputs)
-        shape = (1, inputs.shape[1]) + (1, ) * (inputs.ndim - 2)
+        shape = (1, inputs.shape[1]) + (1, ) * (inputs.dim() - 2)
         out = (inputs - mean.view(shape)) / (var.view(shape) + self.eps).sqrt()
         if self.affine:
             if not in_backward_mode():
@@ -29,14 +29,14 @@ class _BatchNorm(nn.modules.batchnorm._BatchNorm, Module):
         return out, mean, var
 
     def inverse(self, outputs, mean, var):  # pylint: disable=arguments-differ
-        size = (1, outputs.shape[1]) + (1, ) * (outputs.ndim - 2)
+        size = (1, outputs.shape[1]) + (1, ) * (outputs.dim() - 2)
         if self.affine:
             outputs = (outputs - self.bias.view(size)) / self.weight.view(size)
         return outputs * (var.view(size) + self.eps).sqrt() + mean.view(size)
 
     def _get_stats(self, inputs):
         if self.training or self.running_mean is self.running_var is None:
-            dim = tuple(set(range(inputs.ndim)) - {1})
+            dim = tuple(set(range(inputs.dim())) - {1})
             var, mean = torch.var_mean(inputs.detach(), dim, unbiased=False)
         else:
             var, mean = self.running_var, self.running_mean
