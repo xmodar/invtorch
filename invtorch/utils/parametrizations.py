@@ -1,19 +1,70 @@
 """Parametrization Modules"""
 import torch
 from torch import nn
+from torch.nn.utils.parametrizations import _OrthMaps, _Orthogonal
 
-__all__ = ['NonZero']
+__all__ = ['NonZero', 'Orthogonal', 'ScaledOrthogonal']
 
 
 class NonZero(nn.Module):
     """Parameterization to force the values to be nonzero"""
-    def __init__(self, eps=1e-5, preserve_sign=True):
+    def __init__(self, preserve_sign=True):
         super().__init__()
-        self.eps, self.preserve_sign = eps, preserve_sign
+        self.preserve_sign = preserve_sign
 
     def forward(self, inputs):
         """Perform the forward pass"""
-        eps = torch.tensor(self.eps, dtype=inputs.dtype, device=inputs.device)
-        if self.preserve_sign:
-            eps = torch.where(inputs < 0, -eps, eps)
-        return inputs.where(inputs.detach().abs() > self.eps, eps)
+        return self.call(inputs, self.preserve_sign)
+
+    right_inverse = forward
+
+    @staticmethod
+    def call(inputs, preserve_sign=True):
+        """Force values to be nonzero"""
+        eps = torch.finfo(inputs.dtype).eps * 1e2
+        eps_t = torch.tensor(eps, dtype=inputs.dtype, device=inputs.device)
+        if preserve_sign:
+            eps_t = torch.where(inputs < 0, -eps_t, eps_t)
+        return inputs.where(inputs.detach().abs() > eps, eps_t)
+
+
+class Orthogonal(_Orthogonal):
+    """Orthogonal or unitary parametrization for matrices"""
+    def __init__(self, weight, flatten=None, strategy=None, fast=True):
+        if flatten is not None:
+            weight = weight.flatten(flatten)
+        assert weight.ndim > 1, f'flattened tensor is {weight.ndim}D (< 2D)'
+        if strategy is None:
+            if weight.shape[-2] == weight.shape[-1] or weight.is_complex():
+                strategy = 'matrix_exp'
+            else:
+                strategy = 'householder'
+        orth_enum = getattr(_OrthMaps, strategy, None)
+        if orth_enum is None:
+            maps = {x.name for x in _OrthMaps}
+            raise ValueError(f'strategy={strategy} not in {maps}')
+        super().__init__(weight, orth_enum, use_trivialization=fast)
+        self.flatten = flatten
+
+    def call(self, function, weight):
+        """calls a function on a tensor and flattens if necessary"""
+        if self.flatten is not None:
+            return function(weight.flatten(self.flatten)).view_as(weight)
+        return function(weight)
+
+    def forward(self, weight):  # pylint: disable=arguments-renamed
+        return self.call(super().forward, weight)
+
+    def right_inverse(self, weight):  # pylint: disable=arguments-renamed
+        return self.call(super().right_inverse, weight)
+
+
+class ScaledOrthogonal(Orthogonal):
+    """Scaled orthogonal parametrization for matrices"""
+    def call(self, function, weight):
+        def function_(matrix):
+            eps = torch.finfo(matrix.dtype).eps * 1e2
+            norm = matrix.norm(2, dim=-1, keepdim=True).clamp_min_(eps)
+            return function(matrix / norm) * norm
+
+        return super().call(function_, weight)
