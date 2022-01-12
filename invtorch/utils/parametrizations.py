@@ -64,7 +64,8 @@ class ScaledOrthogonal(Orthogonal):
     def call(self, function, weight):
         def function_(matrix):
             eps = torch.finfo(matrix.dtype).eps * 1e2
-            norm = matrix.norm(2, dim=-1, keepdim=True).clamp_min_(eps)
+            dim = -1 if weight.shape[-1] > weight.shape[-2] else -2
+            norm = matrix.norm(2, dim, keepdim=True).clamp_min(eps)
             return function(matrix / norm) * norm
 
         return super().call(function_, weight)
