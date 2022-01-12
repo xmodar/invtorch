@@ -7,15 +7,13 @@ from torch import nn
 
 from ...autograd.grad_mode import backward_mode, dry_mode
 from ...utils.checkpoint import checkpoint
-from ...utils.tools import pack, requires_grad
+from ...utils.tools import pack
 
 __all__ = ['Module']
 
 
 class Module(nn.Module):
     """Base invertible module"""
-    num_outputs = None  # end index to slice the outputs of `call_function()`
-
     def __init__(self):
         super().__init__()
         self.seed = False  # preserve RNG state in backward
@@ -99,19 +97,27 @@ class Module(nn.Module):
     def reversed(self, value):
         self.reverse(value)
 
-    def process(self, outputs):
-        """Process the outputs of `self.call_function()`"""
-        outputs = pack(outputs)
-        assert isinstance(outputs, tuple), 'should only output a `tuple`'
-        num_outputs = self.num_outputs
-        if num_outputs is None:
-            num_outputs = len(outputs)
-        elif num_outputs < 0:
-            num_outputs += len(outputs)
-        assert 0 < num_outputs <= len(outputs), f'needs {num_outputs} outputs'
-        assert not requires_grad(any=outputs[num_outputs:]), (
-            'discarded outputs must not be differentiable (detach manually)')
-        return outputs[0] if num_outputs == 1 else outputs[:num_outputs]
+    @property
+    def num_outputs(self):
+        """End index to slice `call_function()`'s outputs in `forward()`"""
+        return None
+
+    @property
+    def num_inputs(self):
+        """End index to slice `call_inverse()`'s outputs in `forward()`"""
+        return None
+
+    def process(self, args, inverse=False):
+        """Process the outputs of `call_function()` or `call_inverse()`"""
+        args = pack(args)
+        assert isinstance(args, tuple), 'should only output a `tuple`'
+        num_args = self.num_inputs if inverse else self.num_outputs
+        if num_args is None:
+            num_args = len(args)
+        elif num_args < 0:
+            num_args += len(args)
+        assert 0 < num_args <= len(args), f'needs {num_args} args'
+        return args[0] if num_args == 1 else args[:num_args]
 
     def check(self, *args, rtol=1e-3, atol=1e-5):
         """Check invertability and second forward pass consistency"""

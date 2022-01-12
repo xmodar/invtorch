@@ -1,6 +1,4 @@
 """Invertible Container Modules"""
-import functools
-
 from torch import nn
 
 from ...utils.tools import pack
@@ -11,10 +9,11 @@ __all__ = ['Sequential']
 
 class Sequential(nn.Sequential, Module):
     """Sequential Invertible module"""
-    @functools.wraps(nn.Sequential.__init__)
-    def __init__(self, *args, **kwarg):
-        super().__init__(*args, **kwarg)
-        assert all(not x.seed for x in self), 'Sequential cannot maintain rng'
+    forward = Module.forward
+
+    def add_module(self, name, module):
+        assert module is None or isinstance(module, Module)
+        return super().add_module(name, module)
 
     def function(self, *args):
         extras, counts = [], []
@@ -32,19 +31,22 @@ class Sequential(nn.Sequential, Module):
             end -= count
         args = args[:end]
         for layer in reversed(self):
-            args = pack(layer.call_inverse(*args, *extras.pop()))
+            args = layer.call_inverse(*args, *extras.pop())
+            args = pack(layer.process(args, inverse=True))
         return args[0] if len(args) == 1 else args
 
-    def process(self, outputs):
-        process = self[-1].process if self else super().process
-        return process(outputs[:-sum(outputs[-1]) - 1])
-
-    call_function, call_inverse = function, inverse
+    def process(self, args, inverse=False):
+        if inverse:
+            return args
+        return super().process(args[:-sum(args[-1]) - 1])
 
     @property
-    def num_outputs(self):
-        """end index to slice the outputs of `call_function()`"""
-        return self[-1].num_outputs if self else None
+    def call_function(self):
+        return self.function
+
+    @property
+    def call_inverse(self):
+        return self.inverse
 
     @property
     def reversible(self):

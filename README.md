@@ -62,7 +62,7 @@ You can verify your implementation of `inverse()` by calling `check()`. In some 
 
 ### num_outputs
 
-Sometimes, `inverse()` requires auxiliary outputs from `function()` that are not necessarily needed as an output for `forward()`. To specify how many outputs do we need to keep, we can modify the `num_outputs` attribute (`None` means keep everything).
+Sometimes, `inverse()` requires auxiliary outputs from `function()` that are not necessarily needed as an output for `forward()`. To specify how many outputs do we need to keep, we can modify the `num_outputs` property (`None` keeps everything). Extra outputs will be hidden using `process()` which is automatically called by `forward()`. Another property `num_inputs` is also defined which helps composing inverse calls like in `invtorch.nn.Sequential.inverse()`.
 
 ### reverse()
 
