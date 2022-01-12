@@ -4,28 +4,28 @@ import functools
 from torch import nn
 from torch.nn import functional as F
 
-from .module import Module, WrapperModule
+from .module import Module
 
 __all__ = ['Identity', 'Linear']
 
 
-class Identity(Module):
+class Identity(nn.Identity, Module):
     """Identity module"""
     reversible = True
 
-    def forward(self, *args, **kwargs):
+    def forward(self, *args, **kwargs):  # pylint: disable=unused-argument
         return args[0] if len(args) == 1 else args
 
     function = inverse = forward
 
 
-class Linear(WrapperModule):
+class Linear(nn.Linear, Module):
     """Invertible linear module"""
-    wrapped_type = nn.Linear
+    forward = Module.forward
 
     @functools.wraps(nn.Linear.__init__)
     def __init__(self, *args, **kwargs):
-        super().__init__(nn.Linear(*args, **kwargs))
+        super().__init__(*args, **kwargs)
         assert self.in_features <= self.out_features, 'few out_features'
 
     @property
@@ -34,10 +34,13 @@ class Linear(WrapperModule):
 
     def function(self, inputs):  # pylint: disable=arguments-differ
         """Compute the outputs of the function"""
-        return self.module.forward(inputs)
+        return super().forward(inputs)
 
     def inverse(self, outputs):  # pylint: disable=arguments-differ
         """Compute the inputs of the function"""
         if self.bias is not None:
             outputs = outputs - self.bias
         return F.linear(outputs, self.weight.pinverse())
+
+    def extra_repr(self):
+        return f'{super().extra_repr()}, {Module.extra_repr(self)}'

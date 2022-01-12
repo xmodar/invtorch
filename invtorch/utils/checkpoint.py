@@ -58,11 +58,10 @@ class CheckpointFunction(torch.autograd.Function):
             outputs = function(*args)
 
         # mark non-differentiable tensors
-        packed_outputs = pack(outputs)
-        grads = [requires_grad(x) for x in packed_outputs]
-        no_grads = (x for x, g in zip(packed_outputs, grads) if not g)
-        ctx.mark_non_differentiable(*filter(torch.is_tensor, no_grads))
-        if not any(grads):  # all outputs are non-differentiable
+        output_pack = pack(outputs)
+        grad = lambda r: lambda x: torch.is_tensor(x) and r == x.requires_grad
+        ctx.mark_non_differentiable(*filter(grad(False), output_pack))
+        if not any(map(grad(True), output_pack)):  # non-differentiable outputs
             return outputs
 
         # get all tensors that should be deallocated from memory `yeet`
@@ -70,10 +69,10 @@ class CheckpointFunction(torch.autograd.Function):
             yeet = itertools.repeat(False, len(args))
         else:
             uid = lambda x: x.storage().data_ptr() if torch.is_tensor(x) else 0
-            keep = {uid(x) for x in itertools.chain(keep, packed_outputs, [0])}
+            keep = {uid(x) for x in itertools.chain(keep, output_pack, [0])}
             yeet = [uid(x) not in keep for x in args]
             if any(yeet):
-                inverse = functools.partial(inverse, *packed_outputs)
+                inverse = functools.partial(inverse, *output_pack)
             else:
                 inverse = None
         ctx.function, ctx.inverse = function, inverse
@@ -116,6 +115,7 @@ class CheckpointFunction(torch.autograd.Function):
         with torch.enable_grad(), torch.cuda.amp.autocast(ctx.autocast):
             with backward_mode(), ctx.forked_rng:
                 outputs = pack(ctx.function(*inputs))
+
         # perform the backward pass on outputs that requires_grad
         outputs_with_grad, args_with_grad = [], []
         for output, arg in zip(outputs, args):

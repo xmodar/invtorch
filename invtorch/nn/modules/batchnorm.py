@@ -6,22 +6,23 @@ from torch import nn
 
 from ...autograd.grad_mode import in_backward_mode
 from ...utils.parametrizations import NonZero
-from .module import WrapperModule
+from .module import Module
 
 __all__ = ['BatchNorm1d', 'BatchNorm2d', 'BatchNorm3d']
 
 
-class _BatchNorm(WrapperModule):
-    """Invertible batchnorm layer (inverse doesn't update running stats)"""
-    wrapped_type = nn.modules.batchnorm._BatchNorm  # pylint: disable=protected-access
+class _BatchNorm(nn.modules.batchnorm._BatchNorm, Module):
+    """Invertible batchnorm layer"""
+    # pylint: disable=abstract-method, protected-access
     num_outputs = 1
+    forward = Module.forward
 
-    def __init__(self, module):
-        super().__init__(module)
+    @functools.wraps(nn.modules.batchnorm._BatchNorm.__init__)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.non_zero = NonZero(self.eps / 100)
 
     def function(self, inputs):  # pylint: disable=arguments-differ
-        """Perform the forward pass"""
         self._check_input_dim(inputs)
         mean, var = self._get_stats(inputs)
         shape = (1, inputs.shape[1]) + (1, ) * (inputs.ndim - 2)
@@ -31,6 +32,7 @@ class _BatchNorm(WrapperModule):
             out = self.weight.view(shape) * out + self.bias.view(shape)
         if not in_backward_mode():
             self._update_stats(mean, var, inputs.numel())
+        # TODO: match PyTorch's BatchNorm forward()
         return out, mean, var
 
     def inverse(self, outputs, mean, var):  # pylint: disable=arguments-differ
@@ -49,7 +51,7 @@ class _BatchNorm(WrapperModule):
 
     def _update_stats(self, mean, var, inputs_numel):
         if self.training and self.track_running_stats:
-            self.module.num_batches_tracked = self.num_batches_tracked + 1
+            self.num_batches_tracked = self.num_batches_tracked + 1
             if self.momentum is None:
                 factor = 1 / self.num_batches_tracked
             else:
@@ -59,29 +61,17 @@ class _BatchNorm(WrapperModule):
             self.running_mean.mul_(1 - factor).add_(mean)
             self.running_var.mul_(1 - factor).add_(var)
 
+    def extra_repr(self):
+        return f'{super().extra_repr()}, {Module.extra_repr(self)}'
 
-class BatchNorm1d(_BatchNorm):
+
+class BatchNorm1d(nn.BatchNorm1d, _BatchNorm):
     """Invertible 1D convolution"""
-    wrapped_type = nn.BatchNorm1d
-
-    @functools.wraps(nn.BatchNorm1d.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(nn.BatchNorm1d(*args, **kwargs))
 
 
-class BatchNorm2d(_BatchNorm):
+class BatchNorm2d(nn.BatchNorm2d, _BatchNorm):
     """Invertible 2D convolution"""
-    wrapped_type = nn.BatchNorm2d
-
-    @functools.wraps(nn.BatchNorm2d.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(nn.BatchNorm2d(*args, **kwargs))
 
 
-class BatchNorm3d(_BatchNorm):
+class BatchNorm3d(nn.BatchNorm3d, _BatchNorm):
     """Invertible 3D convolution"""
-    wrapped_type = nn.BatchNorm3d
-
-    @functools.wraps(nn.BatchNorm3d.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(nn.BatchNorm3d(*args, **kwargs))

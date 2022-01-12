@@ -5,17 +5,18 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .module import WrapperModule
+from .module import Module
 
 __all__ = ['Conv1d', 'Conv2d', 'Conv3d']
 
 
-class _ConvNd(WrapperModule):
+class _ConvNd(nn.modules.conv._ConvNd, Module):
     """Invertible convolution"""
-    wrapped_type = nn.modules.conv._ConvNd  # pylint: disable=protected-access
+    # pylint: disable=protected-access
 
-    def __init__(self, module):
-        super().__init__(module)
+    @functools.wraps(nn.modules.conv._ConvNd.__init__)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         outputs, inputs = self.flat_weight_shape
         assert inputs <= outputs, f'out_channels/groups={outputs} < {inputs}'
         # TODO: assert kernel_size is still invertible given stride & dilation
@@ -29,7 +30,8 @@ class _ConvNd(WrapperModule):
         # TODO: make input padding an opt-in feature
         input_padding = self.get_input_padding(inputs.shape)
         assert sum(input_padding) == 0, f'inputs need padding: {inputs.shape}'
-        return self.module.forward(inputs)
+        # pylint: disable=bad-super-call
+        return super(type(self), self).forward(inputs)
 
     def inverse(self, outputs):  # pylint: disable=arguments-differ
         if self.bias is not None:
@@ -75,29 +77,20 @@ class _ConvNd(WrapperModule):
         shape = self.weight.shape
         return shape[0] // self.groups, shape[1:].numel()
 
+    def extra_repr(self):
+        return f'{super().extra_repr()}, {Module.extra_repr(self)}'
 
-class Conv1d(_ConvNd):
+
+class Conv1d(nn.Conv1d, _ConvNd):
     """Invertible 1D convolution"""
-    wrapped_type = nn.Conv1d
-
-    @functools.wraps(nn.Conv1d.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(nn.Conv1d(*args, **kwargs))
+    forward = Module.forward
 
 
-class Conv2d(_ConvNd):
+class Conv2d(nn.Conv2d, _ConvNd):
     """Invertible 2D convolution"""
-    wrapped_type = nn.Conv2d
-
-    @functools.wraps(nn.Conv2d.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(nn.Conv2d(*args, **kwargs))
+    forward = Module.forward
 
 
-class Conv3d(_ConvNd):
+class Conv3d(nn.Conv3d, _ConvNd):
     """Invertible 3D convolution"""
-    wrapped_type = nn.Conv3d
-
-    @functools.wraps(nn.Conv3d.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(nn.Conv3d(*args, **kwargs))
+    forward = Module.forward

@@ -1,16 +1,20 @@
 """Invertible Flatten Modules"""
+from torch import nn
+
 from .module import Module
 
 __all__ = ['Flatten']
 
 
-class Flatten(Module):
+class Flatten(nn.Flatten, Module):
     """Invertible flatten operation"""
     num_outputs = 1
+    forward = Module.forward
 
     def __init__(self, start_dim=1, end_dim=-1, dims=None):
-        super().__init__()
-        self.start_dim, self.end_dim, self.dims = start_dim, end_dim, dims
+        super().__init__(start_dim, end_dim)
+        self.dims = dims
+        self.checkpoint = False
 
     def function(self, inputs):  # pylint: disable=arguments-differ
         def check(dim):
@@ -32,3 +36,6 @@ class Flatten(Module):
     @property
     def reversible(self):
         return self.dims is not None
+
+    def extra_repr(self):
+        return f'{super().extra_repr()}, {Module.extra_repr(self)}'

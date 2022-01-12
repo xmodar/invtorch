@@ -9,7 +9,7 @@ from ...autograd.grad_mode import backward_mode, dry_mode
 from ...utils.checkpoint import checkpoint
 from ...utils.tools import pack, requires_grad
 
-__all__ = ['Module', 'WrapperModule']
+__all__ = ['Module']
 
 
 class Module(nn.Module):
@@ -176,20 +176,5 @@ class Module(nn.Module):
             extra += f', invertible={self.invertible}, seed={self.seed}'
         return extra
 
-
-class WrapperModule(Module):  # pylint: disable=abstract-method
-    """Base wrapper invertible module"""
-    wrapped_type = ()
-
-    def __init__(self, module):
-        assert self.wrapped_type, 'define wrapped_type'
-        assert isinstance(module, self.wrapped_type), (
-            f'{type(module).__name__} is not in <{self.wrapped_type}>')
-        super().__init__()
-        self.module = module
-
-    def __getattr__(self, name):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.module, name)
+    def __repr__(self):
+        return 'Inv' + super().__repr__()
