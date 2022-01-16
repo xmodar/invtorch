@@ -5,19 +5,15 @@ from contextlib import contextmanager
 import torch
 from torch import nn
 
-from ...autograd.grad_mode import dry_mode
+from ...autograd.grad_mode import backward_mode, dry_mode
 from ...utils.checkpoint import checkpoint
 from ...utils.tools import pack
 
-__all__ = ['Module', 'WrapperModule']
+__all__ = ['Module']
 
 
 class Module(nn.Module):
-    """Base invertible module `inputs = self.inverse(*self.function(*inputs))`
-
-    Use this with great caution. Refer to the notes in `invtorch.checkpoint()`
-    Source: https://github.com/xmodar/invtorch
-    """
+    """Base invertible module"""
     def __init__(self):
         super().__init__()
         self.seed = False  # preserve RNG state in backward
@@ -27,15 +23,20 @@ class Module(nn.Module):
 
     def forward(self, *args, **kwargs):
         """Perform the forward pass"""
-        inverse = self.call_inverse if self.invertible else None
-        return checkpoint(self.call_function, inverse, (), self.seed,
-                          self.checkpoint, *args, **kwargs)
+        private = {
+            'seed': self.seed,
+            'enabled': self.checkpoint,
+            'inverse': self.call_inverse if self.invertible else None,
+        }
+        assert all(k not in kwargs for k in private), 'got an illegal argument'
+        kwargs.update(private)
+        return self.process(checkpoint(self.call_function, *args, **kwargs))
 
-    def function(self, *args, **kwargs):
+    def function(self, *args):
         """Compute the outputs of the function given the inputs"""
         raise NotImplementedError
 
-    def inverse(self, *args, **kwargs):
+    def inverse(self, *args):
         """Compute the inputs of the function given the outputs"""
         raise NotImplementedError
 
@@ -96,25 +97,44 @@ class Module(nn.Module):
     def reversed(self, value):
         self.reverse(value)
 
-    def check(self, *args, **kwargs):
-        """Check if invertability and second forward pass consistency"""
-        def check(args1, args2, message, rtol=1e-3, atol=1e-5):
+    @property
+    def num_outputs(self):
+        """End index to slice `call_function()`'s outputs in `forward()`"""
+        return None
+
+    @property
+    def num_inputs(self):
+        """End index to slice `call_inverse()`'s outputs in `forward()`"""
+        return None
+
+    def process(self, args, inverse=False):
+        """Process the outputs of `call_function()` or `call_inverse()`"""
+        args = pack(args)
+        assert isinstance(args, tuple), 'should only output a `tuple`'
+        num_args = self.num_inputs if inverse else self.num_outputs
+        if num_args is None:
+            num_args = len(args)
+        elif num_args < 0:
+            num_args += len(args)
+        assert 0 < num_args <= len(args), f'needs {num_args} args'
+        return args[0] if num_args == 1 else args[:num_args]
+
+    def check(self, *args, rtol=1e-3, atol=1e-5):
+        """Check invertability and second forward pass consistency"""
+        def check(args1, args2, message):
             for arg1, arg2 in itertools.zip_longest(args1, args2):
                 is_tensor = torch.is_tensor(arg1)
                 assert is_tensor == torch.is_tensor(arg2), message
                 same = not is_tensor or torch.allclose(arg1, arg2, rtol, atol)
                 assert same, message
 
-        cache = {':mode': 'forward'}
         with dry_mode():
-            outputs = pack(self.call_function(*args, **kwargs, cache=cache))
-        cache.pop(':mode')
-        cache['cache'] = {':mode': 'inverse', 'saved': set()}
+            outputs = pack(self.call_function(*args))
         with torch.inference_mode():
-            inputs = pack(self.call_inverse(*outputs, **cache))
+            inputs = pack(self.call_inverse(*outputs))
         check(args, inputs, 'inverted tensors mismatch (try double precision)')
-        cache = {':mode': 'backward'}
-        second = pack(self.call_function(*args, **kwargs, cache=cache))
+        with backward_mode():
+            second = pack(self.call_function(*args))
         if self.seed:
             message = 'second forward pass mismatched despite `self.seed=True`'
         else:
@@ -162,21 +182,5 @@ class Module(nn.Module):
             extra += f', invertible={self.invertible}, seed={self.seed}'
         return extra
 
-
-class WrapperModule(Module):
-    """Base wrapper invertible module"""
-    # pylint: disable=abstract-method
-    wrapped_type = ()
-
-    def __init__(self, module):
-        assert self.wrapped_type, 'define wrapped_type'
-        assert isinstance(module, self.wrapped_type), (
-            f'{type(module).__name__} is not in <{self.wrapped_type}>')
-        super().__init__()
-        self.module = module
-
-    def __getattr__(self, name):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.module, name)
+    def __repr__(self):
+        return 'Inv' + super().__repr__()

@@ -2,50 +2,59 @@
 from torch import nn
 
 from ...utils.tools import pack
-from .module import WrapperModule
+from .module import Module
 
 __all__ = ['Sequential']
 
 
-class Sequential(WrapperModule):
+class Sequential(nn.Sequential, Module):
     """Sequential Invertible module"""
-    wrapped_type = nn.Sequential
+    forward = Module.forward
 
-    def __init__(self, *modules):
-        super().__init__(nn.Sequential(*modules))
+    def add_module(self, name, module):
+        assert module is None or isinstance(module, Module)
+        return super().add_module(name, module)
 
-    def function(self, *args, **kwargs):
-        cache = kwargs.pop('cache', None)
-        if cache is not None:
-            all_kwargs = []
-            cache['kwargs'], cache = all_kwargs, cache.copy()
-            clean_cache = cache
-        for layer in self.module:
-            if cache is not None:
-                cache = clean_cache.copy()
-            args = layer.call_function(*pack(args), **kwargs, cache=cache)
-            if cache is not None:
-                cache.pop(':mode', None)
-                all_kwargs.append(cache)
-            kwargs = {}
-        return args
+    def function(self, *args):
+        extras, counts = [], []
+        for layer in self:
+            outputs = pack(layer.call_function(*args))
+            args = pack(layer.process(outputs))
+            counts.append(len(outputs) - len(args))
+            extras.extend(outputs[len(args):])
+        return (*args, *extras, counts)
 
-    def inverse(self, *args, kwargs=None, cache=None):
-        # pylint: disable=arguments-differ, unused-argument
-        if cache is not None and cache.get(':saved'):
-            cache[':saved'] = set()
-        for i, layer in enumerate(reversed(self.module), 1):
-            rest = {} if kwargs is None else kwargs[-i]
-            args = layer.call_inverse(*pack(args), **rest, cache=cache)
-        return args
+    def inverse(self, *args):
+        extras, end = [()] * len(args[-1]), -1
+        for i, count in enumerate(reversed(args[end]), 1):
+            extras[-i] = args[end - count:end]
+            end -= count
+        args = args[:end]
+        for layer in reversed(self):
+            args = layer.call_inverse(*args, *extras.pop())
+            args = pack(layer.process(args, inverse=True))
+        return args[0] if len(args) == 1 else args
 
-    call_function, call_inverse = function, inverse
+    def process(self, args, inverse=False):
+        if inverse:
+            return args
+        return super().process(args[:-sum(args[-1]) - 1])
+
+    @property
+    def call_function(self):
+        return self.function
+
+    @property
+    def call_inverse(self):
+        return self.inverse
 
     @property
     def reversible(self):
-        return all(layer.reversible for layer in self.module)
+        return all(layer.reversible for layer in self)
 
     def reverse(self, mode=None):
         if self.reversed != super().reverse(mode).reversed:
-            layers = reversed(layer.reverse() for layer in self.module)
-            self.module = nn.Sequential(*layers)
+            layers = [layer.reverse() for layer in self]
+            for i, layer in enumerate(reversed(layers)):
+                self[i] = layer
+        return self

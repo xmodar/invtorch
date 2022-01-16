@@ -1,105 +1,150 @@
-"""Invertible Convolutions"""
+"""Invertible Convolution Modules"""
 import functools
 
 import torch
-import torch.nn.functional as F
 from torch import nn
+from torch.nn import functional as F
+from torch.nn.utils import parametrize as P
 
-from .module import WrapperModule
+from ...utils.parametrizations import ScaledOrthogonal
+from .module import Module
+from .padding import Pad
 
 __all__ = ['Conv1d', 'Conv2d', 'Conv3d']
 
 
-class _ConvNd(WrapperModule):
-    """Invertible convolution"""
-    wrapped_type = nn.modules.conv._ConvNd  # pylint: disable=protected-access
+class _ConvNd(nn.modules.conv._ConvNd, Module):
+    """Invertible convolution layer"""
+    # pylint: disable=protected-access
+    num_inputs = num_outputs = 1
 
-    def __init__(self, module):
-        super().__init__(module)
-        outputs, inputs = self.flat_weight_shape
+    @functools.wraps(nn.modules.conv._ConvNd.__init__)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        inputs = self.weight.shape[1:].numel()
+        outputs = self.out_channels // self.groups
         assert inputs <= outputs, f'out_channels/groups={outputs} < {inputs}'
-        # TODO: assert kernel_size is still invertible given stride & dilation
+        self.conv_transpose = functools.partial(
+            getattr(F, f'conv_transpose{len(self.kernel_size)}d'),
+            bias=None,
+            stride=self.stride,
+            padding=self.padding,
+            output_padding=0,
+            groups=self.groups,
+            dilation=self.dilation,
+        )
+        param = ScaledOrthogonal(self.weight, (self.groups, outputs, inputs))
+        P.register_parametrization(self, 'weight', param, unsafe=True)
+        self._reversible = inputs == outputs
+        self.pad = self.patchwise = None
+
+    def _init_mode(self, ceil_mode, patchwise):
+        self.pad = Pad() if ceil_mode else None
+        args = self.kernel_size, self.stride, self.dilation
+
+        def fits(kernel_size, stride, dilation):
+            return stride <= kernel_size and (1 in (dilation, kernel_size))
+
+        assert all(map(lambda x: fits(*x), zip(*args))), (
+            'Bad arguments! Set `stride` <= `kernel_size` and `dilation=1')
+
+        def tiles(kernel_size, stride, dilation):
+            return stride == kernel_size and (1 in (dilation, kernel_size))
+
+        self.patchwise = all(map(lambda x: tiles(*x), zip(*args)))
+        assert not patchwise or self.patchwise, (
+            'The `patchwise` mode is enabled by default for efficiency. '
+            'Either set `stride` == `kernel_size` and `dilation=1` '
+            'or set `patchwise=False` to force using the slow mode.')
 
     @property
     def reversible(self):
-        outputs, inputs = self.flat_weight_shape
-        return inputs == outputs, f'out_channels/groups={outputs} != {inputs}'
+        return not self.ceil_mode and self._reversible
 
-    def function(self, inputs, cache=None):
-        # pylint: disable=arguments-differ, unused-argument
-        # TODO: make input padding an opt-in feature
-        input_padding = self.get_input_padding(inputs.shape)
-        assert sum(input_padding) == 0, f'inputs need padding: {inputs.shape}'
-        return self.module.forward(inputs)
+    def _conv_forward(self, input, weight, bias):
+        """perform the forward pass given the inputs and parameters"""
+        # pylint: disable=redefined-builtin
+        raise NotImplementedError
 
-    def inverse(self, outputs, cache=None):
-        # pylint: disable=arguments-differ, unused-argument
+    def function(self, inputs):  # pylint: disable=arguments-differ
+        def rule(size, kernel_size, padding, dilation):
+            effective_kernel_size = dilation * (kernel_size - 1) + 1
+            return size + 2 * padding - effective_kernel_size
+
+        pad = self.pad if self.ceil_mode else Pad
+        args = self.kernel_size, self.padding, self.dilation
+        size = map(lambda x: rule(*x), zip(inputs.shape[2:], *args))
+        padding = pad.multiple(tuple(size), self.stride)
+        if self.ceil_mode:
+            inputs, padding = self.pad.call_function(inputs, padding)
+        else:
+            assert pad.passthrough(padding), (
+                f'`inputs` of shape {inputs.shape} needs padding {padding}. '
+                'Either do it manually or use `ceil_mode=True`.')
+            padding = None
+        return self._conv_forward(inputs, self.weight, self.bias), padding
+
+    def inverse(self, outputs, padding=None):
+        # pylint: disable=arguments-differ
+        shape = (1, *outputs.shape[1:])
         if self.bias is not None:
-            outputs = outputs - self.bias.view(-1, *[1] * self.dim)
-
-        # compute the overlapped inputs
-        factor, input_shape = self.flat_weight_shape
-        weight = self.weight.view(self.groups, -1, input_shape)
-        weight = weight.pinverse().transpose(-1, -2).reshape_as(self.weight)
-        inputs = self.conv_transpose(outputs, weight)
-
-        # TODO: make kernel overlaps an opt-in feature
-        # normalize the overlapping regions
-        one = torch.ones((), device=inputs.device, dtype=inputs.dtype)
-        outputs = (one / factor).expand(1, *outputs.shape[1:])
-        overlaps_weight = one.expand(self.out_channels, 1, *self.kernel_size)
-        overlaps = self.conv_transpose(outputs, overlaps_weight)
-        return inputs.div_(overlaps)
-
-    def get_input_padding(self, input_size):
-        """Get the input padding given the input size"""
-        def rule(size, kernel_size, stride, padding, dilation):
-            margin = 2 * padding - dilation * (kernel_size - 1) - 1
-            return size - ((size + margin) // stride) * stride + margin
-
-        input_size = tuple(input_size)[-self.dim:]
-        args = self.kernel_size, self.stride, self.padding, self.dilation
-        return tuple(map(lambda x: rule(*x), zip(input_size, *args)))
-
-    def conv_transpose(self, inputs, weight):
-        """Compute conv_transpose"""
-        args = None, self.stride, self.padding, 0, self.groups, self.dilation
-        return getattr(F, f'conv_transpose{self.dim}d')(inputs, weight, *args)
+            outputs = outputs - self.bias.view(-1, *[1] * (len(shape) - 2))
+        outputs = self.conv_transpose(outputs, self.inverse_weight)
+        if not self.patchwise and self.kernel_size != outputs.shape[2:]:
+            one = torch.ones((), device=outputs.device, dtype=outputs.dtype)
+            weight = one.expand(self.out_channels, 1, *self.kernel_size)
+            inputs = (one / (self.out_channels // self.groups)).expand(shape)
+            outputs /= self.conv_transpose(inputs, weight)
+        if self.ceil_mode:
+            outputs = self.pad.call_inverse(outputs, padding)
+        else:
+            assert padding is None, 'cannot use `pad` when not in `ceil_mode`'
+        return outputs
 
     @property
-    def dim(self):
-        """Number of dimensions"""
-        return self.weight.dim() - 2
+    def inverse_weight(self):
+        """The inverse of the weight parameter"""
+        weight = self.weight
+        inputs = weight.shape[1:].numel()
+        outputs = self.out_channels // self.groups
+        flat_weight = self.weight.view(self.groups, outputs, inputs)
+        inverse = torch.inverse if inputs == outputs else torch.pinverse
+        return inverse(flat_weight).transpose(-1, -2).reshape(weight.shape)
 
     @property
-    def flat_weight_shape(self):
-        """Output and input shapes"""
-        shape = self.weight.shape
-        return shape[0] // self.groups, shape[1:].numel()
+    def ceil_mode(self):
+        """Whether to pad inputs (same as `ceil_mode` in pooling layers)"""
+        return self.pad is not None
+
+    def extra_repr(self):
+        return f'{super().extra_repr()}, {Module.extra_repr(self)}'
 
 
-class Conv1d(_ConvNd):
-    """Invertible 1D convolution"""
-    wrapped_type = nn.Conv1d
+class Conv1d(nn.Conv1d, _ConvNd):
+    """Invertible 1D convolution layer"""
+    forward = Module.forward
 
     @functools.wraps(nn.Conv1d.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(nn.Conv1d(*args, **kwargs))
+    def __init__(self, *args, ceil_mode=False, patchwise=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._init_mode(ceil_mode, patchwise)
 
 
-class Conv2d(_ConvNd):
-    """Invertible 2D convolution"""
-    wrapped_type = nn.Conv2d
+class Conv2d(nn.Conv2d, _ConvNd):
+    """Invertible 2D convolution layer"""
+    forward = Module.forward
 
     @functools.wraps(nn.Conv2d.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(nn.Conv2d(*args, **kwargs))
+    def __init__(self, *args, ceil_mode=False, patchwise=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._init_mode(ceil_mode, patchwise)
 
 
-class Conv3d(_ConvNd):
-    """Invertible 3D convolution"""
-    wrapped_type = nn.Conv3d
+class Conv3d(nn.Conv3d, _ConvNd):
+    """Invertible 3D convolution layer"""
+    forward = Module.forward
 
     @functools.wraps(nn.Conv3d.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(nn.Conv3d(*args, **kwargs))
+    def __init__(self, *args, ceil_mode=False, patchwise=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._init_mode(ceil_mode, patchwise)

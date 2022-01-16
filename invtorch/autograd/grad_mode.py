@@ -1,18 +1,29 @@
 """Gradient Modes and InvTorch State"""
-import threading
 from contextlib import contextmanager
 
 import torch
 
-__all__ = ['dry_mode', 'in_dry_mode']
+__all__ = ['backward_mode', 'in_backward_mode', 'dry_mode', 'in_dry_mode']
 
-_local = threading.local()
-_local.dry_mode = 0
+
+def in_backward_mode():
+    """Whether we are in backward"""
+    return backward_mode.flag
+
+
+@contextmanager
+def backward_mode(enabled=True):
+    """Enable backward_mode; don't call this in your code"""
+    try:
+        backward_mode.flag = bool(enabled)
+        yield
+    finally:
+        backward_mode.flag = False
 
 
 def in_dry_mode():
     """Whether we are in dry_mode"""
-    return _local.dry_mode != 0
+    return dry_mode.counter != 0
 
 
 def _dry_mode():
@@ -33,9 +44,13 @@ def dry_mode(enabled=True):
     if enabled:
         try:
             with _dry_mode(), torch.enable_grad():
-                _local.dry_mode += 1
+                dry_mode.counter += 1
                 yield
         finally:
-            _local.dry_mode -= 1
+            dry_mode.counter -= 1
     else:
         yield
+
+
+dry_mode.counter = 0
+backward_mode.flag = False
