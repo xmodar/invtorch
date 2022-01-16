@@ -30,10 +30,10 @@ class NonZero(nn.Module):
 
 class Orthogonal(_Orthogonal):
     """Orthogonal or unitary parametrization for matrices"""
-    def __init__(self, weight, flatten=None, strategy=None, fast=True):
-        if flatten is not None:
-            weight = weight.flatten(flatten)
-        assert weight.dim() > 1, f'flattened tensor is {weight.dim()}D (< 2D)'
+    def __init__(self, weight, view=None, strategy=None, fast=True):
+        if view is not None:
+            weight = weight.data.view(view)
+        assert weight.dim() > 1, f'viewed tensor is {weight.dim()}D (< 2D)'
         if strategy is None:
             if weight.shape[-2] == weight.shape[-1] or weight.is_complex():
                 strategy = 'matrix_exp'
@@ -44,12 +44,12 @@ class Orthogonal(_Orthogonal):
             maps = {x.name for x in _OrthMaps}
             raise ValueError(f'strategy={strategy} not in {maps}')
         super().__init__(weight, orth_enum, use_trivialization=fast)
-        self.flatten = flatten
+        self.view = view
 
     def call(self, function, weight):
-        """calls a function on a tensor and flattens if necessary"""
-        if self.flatten is not None:
-            return function(weight.flatten(self.flatten)).view_as(weight)
+        """calls a function on a tensor and views it if necessary"""
+        if self.view is not None:
+            return function(weight.view(self.view)).view_as(weight)
         return function(weight)
 
     def forward(self, weight):  # pylint: disable=arguments-renamed

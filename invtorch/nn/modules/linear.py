@@ -1,4 +1,4 @@
-"""Linear Invertible Modules"""
+"""Invertible Linear Modules"""
 import functools
 
 import torch
@@ -45,8 +45,14 @@ class Linear(nn.Linear, Module):
         """Compute the inputs of the function"""
         if self.bias is not None:
             outputs = outputs - self.bias
-        inverse = torch.inverse if self.reversible else torch.pinverse
-        return F.linear(outputs, inverse(self.weight))
+        return F.linear(outputs, self.inverse_weight)
+
+    @property
+    def inverse_weight(self):
+        """The inverse of the weight parameter"""
+        weight = self.weight
+        square = weight.shape[-2] == weight.shape[-1]
+        return (torch.inverse if square else torch.pinverse)(weight)
 
     def extra_repr(self):
         return f'{super().extra_repr()}, {Module.extra_repr(self)}'

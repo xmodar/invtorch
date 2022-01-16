@@ -66,7 +66,7 @@ Sometimes, `inverse()` requires auxiliary outputs from `function()` that are not
 
 ### reverse()
 
-`invtorch.nn.Module` can be implemented to be reversible, i.e. `forward()` will call `inverse()` instead of `function()`. Not all invertible modules need to support reversibility. If you want to support it in your own module, then you need to override the `reversible` property to return `True`. The module can be reversed by calling `reverse()` and checked with the `reversed` property. To avoid confusion, `Module` has `call_function()` and `call_inverse()` which will call the correct function based on the value of `reversed`.
+`invtorch.nn.Module` can be implemented to be reversible, i.e. `forward()` will call `inverse()` instead of `function()`. Not all invertible modules need to support reversibility. If you want to support it on your own module, then you need to override the `reversible` property to return `True`. The module can be reversed by calling `reverse()` and checked with the `reversed` property. To avoid confusion, `Module` has `call_function()` and `call_inverse()` which will call the correct function based on the value of `reversed`.
 
 ### checkpoint, invertible, and seed
 
