@@ -79,12 +79,3 @@ PyTorch's checkpoint cannot track the `requires_grad` attribute for its output t
 ## Limitations
 
 There are few caveats to consider though. Invertible functions are hard to define without requiring more memory. Moreover, they are prone to numerical instabilities (e.g., multiplying by numbers close to zero). Even if we can get away with these fundamental problems, there are technical details to consider. There is no way of guarding against accessing the data in the input tensors after calling `function()` and before the backward pass. It is up to the user to ensure this. Otherwise, it is possible to run into illegal memory access errors. Think of residual connections as an example. In `x + f(x)`, assuming `f` is an invertible checkpoint, `x` will be freed from memory before the sum is computed. On the other hand, we can maybe use `x.clone() + f(x)` (not `f(x) + x.clone()`!) but now we have a copy of `x` in memory. It is recommended to encapsulate this inside `f` itself or use a simple checkpoint instead. Other alternatives exists and you should study your case carefully before deciding to use this. For instance, check out `torch.autograd.graph.saved_tensors_hooks()` and `torch.autograd.graph.save_on_cpu()`.
-
-## TODOs
-
-Here are few feature ideas that could be implemented to enrich the utility of this package:
-
-- Add more basic operations
-- Add coupling-based invertible modules
-- Add more checks to help the user debug more features
-- Develop an automatic [mode optimization](https://arxiv.org/abs/1604.06174)
